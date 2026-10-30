@@ -260,49 +260,7 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
           </Btn>
         </div>
 
-        <div
-          style={{
-            marginTop: 14,
-            paddingTop: 10,
-            borderTop: '1px dashed #CBD5E1',
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 8,
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span style={{ fontSize: '0.8rem', color: '#64748B' }}>
-            Mengajar di kelas tanpa akses internet?
-          </span>
-          <button
-            type="button"
-            className="chip"
-            style={{
-              cursor: 'pointer',
-              background: '#F1F5F9',
-              border: '1px solid #CBD5E1',
-              fontSize: '0.78rem',
-              fontWeight: 600,
-            }}
-            onClick={() => {
-              const localSession: TeacherSession = {
-                id: 'guru-offline',
-                name: 'Bapak/Ibu Guru (Mode Offline)',
-                email: 'guru.lokal@aquacity.local',
-                loggedInAt: new Date().toISOString(),
-              };
-              setTeacherSession(localSession);
-              toast('Masuk sebagai Guru dalam Mode Lokal/Offline.');
-              if (onSuccess) onSuccess();
-              go('guru');
-            }}
-          >
-            Masuk Mode Lokal (Offline)
-          </button>
-        </div>
-
-        <p className="hint" style={{ marginTop: 10 }}>
+        <p className="hint" style={{ marginTop: 12 }}>
           Akun Guru diautentikasi langsung oleh layanan Supabase Auth & PostgreSQL Cloud. Sesi tersimpan secara aman dan persisten.
         </p>
       </form>

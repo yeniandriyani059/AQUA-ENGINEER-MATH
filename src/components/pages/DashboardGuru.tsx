@@ -35,10 +35,6 @@ import {
   deleteProjectById,
   projectBelongsToGroup,
 } from '../../utils/access';
-import {
-  getPersistenceMode,
-  SUPABASE_SQL_BLUEPRINT,
-} from '../../services/supabaseSchema';
 import { DesignCanvas } from '../canvas/DesignCanvas';
 import { Aqua } from '../common/Mascot';
 import { Btn, Stat, Field, AquaTip, Modal } from '../common/UI';
@@ -510,6 +506,7 @@ export function DashboardGuru() {
     setSession,
     teacherSession,
     logoutTeacher,
+    purgeTrialData,
     toast,
     go,
   } = useApp();
@@ -547,7 +544,6 @@ export function DashboardGuru() {
   const [filterStatus, setFilterStatus] = useState<string>('SEMUA');
   const [selId, setSelId] = useState<string | null>(null);
   const [presIdx, setPresIdx] = useState<number | null>(null);
-  const [showSchemaModal, setShowSchemaModal] = useState(false);
 
   // Keep selectedClassId valid when classes change
   useEffect(() => {
@@ -606,8 +602,6 @@ export function DashboardGuru() {
       belum,
     };
   }, [groups, projects]);
-
-  const persistenceInfo = getPersistenceMode(data.settings);
 
   // If teacher is not logged in, require teacher authentication first
   if (!teacherSession) {
@@ -1006,9 +1000,6 @@ export function DashboardGuru() {
                     {teacherSession.school && (
                       <span className="chip">{teacherSession.school}</span>
                     )}
-                    <span className="chip" style={{ background: '#FFF8E8', fontSize: '0.78rem' }}>
-                      <Icon n="cloud" size={14} /> {persistenceInfo.label}
-                    </span>
                   </div>
                   <h1>Dashboard Guru</h1>
                   <p className="hint">
@@ -1017,13 +1008,6 @@ export function DashboardGuru() {
                 </div>
               </div>
               <div className="row" style={{ gap: 8 }}>
-                <Btn
-                  sm
-                  icon="cloud"
-                  onClick={() => setShowSchemaModal(true)}
-                >
-                  Skema & RLS Supabase
-                </Btn>
                 <Btn
                   sm
                   kind="orange"
@@ -1864,48 +1848,7 @@ export function DashboardGuru() {
         </>
       )}
 
-      {showSchemaModal && (
-        <Modal
-          title="Kesiapan Struktur Data, Auth & RLS Supabase"
-          onClose={() => setShowSchemaModal(false)}
-          wide
-        >
-          <AquaTip>
-            <b>Status Saat Ini: {persistenceInfo.label}</b>
-            <br />
-            {persistenceInfo.description}
-          </AquaTip>
-          <p className="hint" style={{ marginTop: 10 }}>
-            Berikut adalah cetak biru (blueprint) SQL PostgreSQL, struktur tabel (<code>profiles</code>, <code>classes</code>, <code>groups</code>, <code>projects</code>, <code>project_results</code>, <code>presentations</code>), serta kebijakan <b>Row Level Security (RLS)</b> yang telah disiapkan untuk proyek Supabase Anda:
-          </p>
-          <pre
-            style={{
-              background: '#0F2537',
-              color: '#E8FAFF',
-              padding: 14,
-              borderRadius: 14,
-              fontSize: '0.78rem',
-              maxHeight: 320,
-              overflow: 'auto',
-              marginTop: 10,
-            }}
-          >
-            {SUPABASE_SQL_BLUEPRINT}
-          </pre>
-          <div className="row" style={{ marginTop: 12, justifyContent: 'space-between' }}>
-            <Btn
-              sm
-              icon="copy"
-              onClick={() => copyText(SUPABASE_SQL_BLUEPRINT, 'Skema SQL & RLS Supabase')}
-            >
-              Salin Skema SQL Supabase
-            </Btn>
-            <Btn sm kind="orange" onClick={() => setShowSchemaModal(false)}>
-              Tutup
-            </Btn>
-          </div>
-        </Modal>
-      )}
+
 
       {presIdx !== null && projects.length > 0 && (
         <GuruPresent

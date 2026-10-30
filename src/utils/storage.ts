@@ -125,23 +125,173 @@ export function migrate(p: Project): Project {
   return p;
 }
 
+export const CLEAN_TRIAL_FLAG = 'aem.cleaned_pre_supabase_v2';
+
+/**
+ * Mendeteksi apakah entri merupakan data percobaan lokal sebelum integrasi Supabase
+ * (seperti 'Kelas 5', 'AQUA1', atau anggota 'yeni, eren, devaro').
+ */
+export function isTrialItem(val: unknown): boolean {
+  if (!val || typeof val !== 'string') return false;
+  const s = val.trim().toLowerCase();
+  const isExactKelas5 = s === 'kelas 5' || s === 'kelas5';
+  return (
+    s === 'aqua1' ||
+    s.includes('aqua1') ||
+    isExactKelas5 ||
+    s.includes('yeni') ||
+    s.includes('eren') ||
+    s.includes('devaro')
+  );
+}
+
+/**
+ * Membersihkan data kelas, kelompok, dan proyek percobaan lokal
+ * sambil mempertahankan akun guru (teachers) dan konfigurasi Supabase (settings).
+ */
+export function cleanTrialDataFromStore(d: any): StoredData {
+  if (!d || typeof d !== 'object') {
+    return {
+      teachers: [],
+      classes: [],
+      groups: [],
+      projects: [],
+      currentId: null,
+      settings: { ...DEF_SETTINGS },
+    };
+  }
+
+  const teachers = Array.isArray(d.teachers) ? d.teachers : [];
+  const settings = {
+    ...DEF_SETTINGS,
+    ...(d.settings || {}),
+    sb: { ...DEF_SETTINGS.sb, ...((d.settings || {}).sb || {}) },
+  };
+
+  const rawClasses = Array.isArray(d.classes) ? d.classes : [];
+  const rawGroups = Array.isArray(d.groups) ? d.groups : [];
+  const rawProjects = Array.isArray(d.projects) ? d.projects : [];
+
+  // Cari ID kelompok percobaan (misal AQUA1 / yeni, eren, devaro)
+  const trialGroupIds = new Set<string>();
+  rawGroups.forEach((g: any) => {
+    if (
+      isTrialItem(g.name) ||
+      isTrialItem(g.code) ||
+      isTrialItem(g.members)
+    ) {
+      trialGroupIds.add(g.id);
+    }
+  });
+
+  // Cari ID kelas percobaan (misal Kelas 5 atau kelas yang menaungi kelompok percobaan)
+  const trialClassIds = new Set<string>();
+  rawClasses.forEach((c: any) => {
+    if (isTrialItem(c.name) || isTrialItem(c.code)) {
+      trialClassIds.add(c.id);
+    }
+  });
+
+  rawClasses.forEach((c: any) => {
+    const classGroups = rawGroups.filter((g: any) => g.classId === c.id);
+    if (classGroups.length > 0 && classGroups.every((g: any) => trialGroupIds.has(g.id))) {
+      trialClassIds.add(c.id);
+    }
+  });
+
+  const classes = rawClasses.filter(
+    (c: any) => !trialClassIds.has(c.id) && !isTrialItem(c.name) && !isTrialItem(c.code)
+  );
+
+  const groups = rawGroups.filter(
+    (g: any) =>
+      !trialGroupIds.has(g.id) &&
+      !trialClassIds.has(g.classId) &&
+      !isTrialItem(g.name) &&
+      !isTrialItem(g.code) &&
+      !isTrialItem(g.members)
+  );
+
+  const projects = rawProjects
+    .filter((p: any) => {
+      if (p.group) {
+        if (
+          isTrialItem(p.group.name) ||
+          isTrialItem(p.group.kelas) ||
+          isTrialItem(p.group.members) ||
+          isTrialItem(p.group.classCode) ||
+          isTrialItem(p.group.groupCode)
+        ) {
+          return false;
+        }
+        if (p.group.groupId && trialGroupIds.has(p.group.groupId)) return false;
+        if (p.group.classId && trialClassIds.has(p.group.classId)) return false;
+      }
+      return true;
+    })
+    .map(migrate);
+
+  return {
+    teachers,
+    classes,
+    groups,
+    projects,
+    currentId: d.currentId || null,
+    settings,
+  };
+}
+
+/**
+ * Melakukan pembersihan data percobaan lokal satu kali secara selektif pada localStorage
+ * tanpa menghapus akun guru, session Supabase, atau konfigurasi aplikasi.
+ */
+export function purgeLegacyTrialStorage(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+
+    const raw = localStorage.getItem(LS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const cleaned = cleanTrialDataFromStore(parsed);
+      const { currentId, ...rest } = cleaned;
+      localStorage.setItem(LS, JSON.stringify(rest));
+    }
+
+    // Bersihkan sesi siswa jika berasal dari kelompok percobaan
+    const rawSession = localStorage.getItem('aem.session');
+    if (rawSession) {
+      try {
+        const s = JSON.parse(rawSession);
+        if (
+          isTrialItem(s.name) ||
+          isTrialItem(s.kelas) ||
+          isTrialItem(s.members) ||
+          isTrialItem(s.classCode) ||
+          isTrialItem(s.groupCode)
+        ) {
+          localStorage.removeItem('aem.session');
+        }
+      } catch {
+        localStorage.removeItem('aem.session');
+      }
+    }
+
+    localStorage.setItem(CLEAN_TRIAL_FLAG, 'true');
+  } catch (err) {
+    console.error('Error in purgeLegacyTrialStorage:', err);
+  }
+}
+
 export function loadAll(): StoredData {
   try {
-    const r = localStorage.getItem(LS);
+    if (typeof localStorage !== 'undefined' && !localStorage.getItem(CLEAN_TRIAL_FLAG)) {
+      purgeLegacyTrialStorage();
+    }
+
+    const r = typeof localStorage !== 'undefined' ? localStorage.getItem(LS) : null;
     if (r) {
       const d = JSON.parse(r);
-      return {
-        teachers: Array.isArray(d.teachers) ? d.teachers : [],
-        classes: Array.isArray(d.classes) ? d.classes : [],
-        groups: Array.isArray(d.groups) ? d.groups : [],
-        projects: Array.isArray(d.projects) ? d.projects.map(migrate) : [],
-        currentId: d.currentId || null,
-        settings: {
-          ...DEF_SETTINGS,
-          ...(d.settings || {}),
-          sb: { ...DEF_SETTINGS.sb, ...((d.settings || {}).sb || {}) },
-        },
-      };
+      return cleanTrialDataFromStore(d);
     }
   } catch (e) {
     console.error('Error loading stored data:', e);

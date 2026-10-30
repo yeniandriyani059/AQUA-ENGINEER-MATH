@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { Project, StoredData, SessionInfo, TeacherSession } from '../types';
-import { loadAll, LS, nowIso, sameGroup, curStage, stageState, newProject } from '../utils/storage';
+import { loadAll, LS, nowIso, sameGroup, curStage, stageState, newProject, isTrialItem, purgeLegacyTrialStorage } from '../utils/storage';
 import { STAGES } from '../data/stages';
 import { caseById } from '../data/cases';
 import { supabase } from '../lib/supabase';
@@ -24,6 +24,7 @@ interface AppContextValue {
   setTeacherSession: (ts: TeacherSession | null) => void;
   logoutStudent: () => void;
   logoutTeacher: () => void;
+  purgeTrialData: () => void;
   startMission: (caseId: string, sess?: SessionInfo | null, forceNew?: boolean) => void;
   openAccess: (pendingMission?: string | null, initialRole?: 'siswa' | 'guru') => void;
   accessInitialRole: 'siswa' | 'guru';
@@ -88,7 +89,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [session, setSessionState] = useState<SessionInfo | null>(() => {
     try {
       const s = localStorage.getItem(SESSION_KEY);
-      return s ? JSON.parse(s) : null;
+      if (!s) return null;
+      const parsed = JSON.parse(s);
+      if (
+        isTrialItem(parsed?.name) ||
+        isTrialItem(parsed?.kelas) ||
+        isTrialItem(parsed?.members) ||
+        isTrialItem(parsed?.classCode) ||
+        isTrialItem(parsed?.groupCode)
+      ) {
+        localStorage.removeItem(SESSION_KEY);
+        return null;
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -97,7 +110,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [teacherSession, setTeacherSessionState] = useState<TeacherSession | null>(() => {
     try {
       const ts = localStorage.getItem(TEACHER_SESSION_KEY);
-      return ts ? JSON.parse(ts) : null;
+      if (!ts) return null;
+      const parsed = JSON.parse(ts);
+      // Tolak sesi lokal / tiruan jika ada sisa data lama
+      if (
+        !parsed?.id ||
+        parsed.id === 'guru-offline' ||
+        parsed.id === 'teacher-local' ||
+        !parsed?.email
+      ) {
+        localStorage.removeItem(TEACHER_SESSION_KEY);
+        return null;
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -167,9 +192,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Check initial active session from Supabase
     fetchCurrentTeacherSession().then((ts) => {
-      if (ts) {
-        setTeacherSession(ts);
-      }
+      setTeacherSession(ts);
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event: AuthChangeEvent, sbSession: SupabaseSession | null) => {
@@ -181,7 +204,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         try {
           const { data: profile } = await supabase
             .from('profiles')
-            .select('full_name, school_name')
+            .select('*')
             .eq('id', user.id)
             .maybeSingle();
 
@@ -198,7 +221,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           school: schoolName,
           loggedInAt: new Date().toISOString(),
         });
-      } else if (event === 'SIGNED_OUT') {
+      } else if (event === 'SIGNED_OUT' || !sbSession) {
         setTeacherSession(null);
       }
     });
@@ -294,6 +317,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toast('Anda telah keluar dari akun Guru.');
   }, [setTeacherSession, toast]);
 
+  const purgeTrialData = useCallback(() => {
+    purgeLegacyTrialStorage();
+    const clean = loadAll();
+    setData(clean);
+    if (session && (isTrialItem(session.name) || isTrialItem(session.kelas) || isTrialItem(session.members))) {
+      setSession(null);
+    }
+    toast('Data percobaan lokal telah dibersihkan.');
+  }, [session, setSession, toast]);
+
   const startMission = (caseId: string, sess?: SessionInfo | null, forceNew?: boolean) => {
     const curSess = sess || session;
     if (!curSess) {
@@ -363,6 +396,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setTeacherSession,
         logoutStudent,
         logoutTeacher,
+        purgeTrialData,
         startMission,
         openAccess,
         accessInitialRole,

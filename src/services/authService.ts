@@ -87,17 +87,24 @@ export async function signUpTeacher({
   let teacherSession: TeacherSession | null = null;
 
   if (data.session) {
-    // Upsert profil ke tabel profiles
+    // Sinkronisasi profil ke tabel profiles
     try {
-      await supabase.from('profiles').upsert({
+      const { error: upErr } = await supabase.from('profiles').upsert({
         id: user.id,
         full_name: cleanName,
         email: cleanEmail,
         school_name: cleanSchool || null,
         role: 'teacher',
       });
+      if (upErr) {
+        // Fallback jika kolom full_name/school_name belum ditambahkan via SQL migration di Supabase
+        await supabase.from('profiles').upsert({
+          id: user.id,
+          email: cleanEmail,
+        });
+      }
     } catch (e) {
-      console.warn('Gagal upsert profile saat signup (akan dicoba saat login):', e);
+      console.warn('Sinkronisasi profil saat signup:', e);
     }
 
     teacherSession = {
@@ -143,14 +150,14 @@ export async function signInTeacher({
   const metaName = user.user_metadata?.full_name || user.email?.split('@')[0] || 'Bapak/Ibu Guru';
   const metaSchool = user.user_metadata?.school_name || undefined;
 
-  // Coba ambil profil dari tabel public.profiles
   let fullName = metaName;
   let schoolName = metaSchool;
 
+  // Coba ambil profil dari tabel public.profiles di Supabase
   try {
     const { data: profile, error: pError } = await supabase
       .from('profiles')
-      .select('full_name, school_name')
+      .select('*')
       .eq('id', user.id)
       .maybeSingle();
 
@@ -158,14 +165,20 @@ export async function signInTeacher({
       if (profile.full_name) fullName = profile.full_name;
       if (profile.school_name !== undefined) schoolName = profile.school_name || undefined;
     } else {
-      // Jika profil belum ada di tabel profiles, buat sekarang
-      await supabase.from('profiles').upsert({
+      // Jika profil belum ada di tabel profiles, buat/sinkronkan sekarang
+      const { error: insErr } = await supabase.from('profiles').upsert({
         id: user.id,
         full_name: fullName,
         email: cleanEmail,
         school_name: schoolName || null,
         role: 'teacher',
       });
+      if (insErr) {
+        await supabase.from('profiles').upsert({
+          id: user.id,
+          email: cleanEmail,
+        });
+      }
     }
   } catch (e) {
     console.warn('Gagal membaca/menyimpan ke tabel profiles:', e);
@@ -174,7 +187,7 @@ export async function signInTeacher({
   return {
     id: user.id,
     name: fullName,
-    email: cleanEmail,
+    email: user.email || cleanEmail,
     school: schoolName,
     loggedInAt: new Date().toISOString(),
   };
@@ -182,16 +195,22 @@ export async function signInTeacher({
 
 /**
  * Keluar Akun Guru Supabase
+ * Menggunakan supabase.auth.signOut() resmi
  */
 export async function signOutTeacher(): Promise<void> {
-  const { error } = await supabase.auth.signOut();
-  if (error) {
-    console.warn('Error saat sign out Supabase:', error);
+  try {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.warn('Error saat sign out Supabase:', error);
+    }
+  } catch (e) {
+    console.warn('Pengecualian saat sign out Supabase:', e);
   }
 }
 
 /**
- * Mengambil sesi guru saat ini langsung dari Supabase
+ * Mengambil sesi guru saat ini langsung dari Supabase Auth
+ * Memeriksa supabase.auth.getSession() dan data tabel profiles
  */
 export async function fetchCurrentTeacherSession(): Promise<TeacherSession | null> {
   try {
@@ -205,7 +224,7 @@ export async function fetchCurrentTeacherSession(): Promise<TeacherSession | nul
     try {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('full_name, school_name')
+        .select('*')
         .eq('id', user.id)
         .maybeSingle();
 

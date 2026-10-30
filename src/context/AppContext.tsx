@@ -3,6 +3,9 @@ import { Project, StoredData, SessionInfo, TeacherSession } from '../types';
 import { loadAll, LS, nowIso, sameGroup, curStage, stageState, newProject } from '../utils/storage';
 import { STAGES } from '../data/stages';
 import { caseById } from '../data/cases';
+import { supabase } from '../lib/supabase';
+import type { AuthChangeEvent, Session as SupabaseSession } from '@supabase/supabase-js';
+import { fetchCurrentTeacherSession, signOutTeacher } from '../services/authService';
 
 interface AppContextValue {
   data: StoredData;
@@ -160,6 +163,51 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('hashchange', f);
   }, []);
 
+  // Listen to Supabase Auth state changes & sync teacher session
+  useEffect(() => {
+    // Check initial active session from Supabase
+    fetchCurrentTeacherSession().then((ts) => {
+      if (ts) {
+        setTeacherSession(ts);
+      }
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event: AuthChangeEvent, sbSession: SupabaseSession | null) => {
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && sbSession?.user) {
+        const user = sbSession.user;
+        let fullName = user.user_metadata?.full_name || user.email?.split('@')[0] || 'Bapak/Ibu Guru';
+        let schoolName = user.user_metadata?.school_name || undefined;
+
+        try {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('full_name, school_name')
+            .eq('id', user.id)
+            .maybeSingle();
+
+          if (profile?.full_name) fullName = profile.full_name;
+          if (profile?.school_name !== undefined) schoolName = profile.school_name || undefined;
+        } catch {
+          // ignore
+        }
+
+        setTeacherSession({
+          id: user.id,
+          name: fullName,
+          email: user.email || '',
+          school: schoolName,
+          loggedInAt: new Date().toISOString(),
+        });
+      } else if (event === 'SIGNED_OUT') {
+        setTeacherSession(null);
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, [setTeacherSession]);
+
   const toast = useCallback((msg: string, err?: boolean) => {
     setToastM({ msg, err });
     if (tRef.current) clearTimeout(tRef.current);
@@ -236,7 +284,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     toast('Kamu telah keluar dari sesi kelompok.');
   }, [setSession, toast]);
 
-  const logoutTeacher = useCallback(() => {
+  const logoutTeacher = useCallback(async () => {
+    try {
+      await signOutTeacher();
+    } catch {
+      // ignore
+    }
     setTeacherSession(null);
     toast('Anda telah keluar dari akun Guru.');
   }, [setTeacherSession, toast]);

@@ -74,26 +74,32 @@ export interface SupabasePresentationRow {
   presented_at: string;
 }
 
+import { SUPABASE_URL } from '../lib/supabase';
+
 export function getPersistenceMode(settings?: AppSettings): {
   isCloudConnected: boolean;
   label: string;
   description: string;
 } {
-  const hasUrl = Boolean(settings?.sb?.url && settings.sb.url.trim().startsWith('https://'));
-  const hasKey = Boolean(settings?.sb?.key && settings.sb.key.trim().length > 20);
-  if (hasUrl && hasKey) {
+  const hasConfiguredClient = Boolean(SUPABASE_URL && SUPABASE_URL.startsWith('https://'));
+  const hasCustomSettings = Boolean(
+    settings?.sb?.url?.trim().startsWith('https://') &&
+    settings?.sb?.key?.trim().length > 20
+  );
+
+  if (hasConfiguredClient || hasCustomSettings) {
     return {
       isCloudConnected: true,
-      label: 'Siap Koneksi Supabase Cloud',
-      description:
-        'Konfigurasi URL & Anon Key Supabase terdeteksi. Sinkronisasi lintas perangkat memerlukan penerapan tabel dan kebijakan RLS pada proyek Supabase Anda.',
+      label: 'Supabase Cloud Terhubung',
+      description: `Koneksi Supabase aktif (${SUPABASE_URL}). Autentikasi Guru dan sinkronisasi data cloud siap digunakan.`,
     };
   }
+
   return {
     isCloudConnected: false,
-    label: 'Mode Perangkat Lokal (Belum Terhubung ke Supabase)',
+    label: 'Mode Perangkat Lokal',
     description:
-      'Data akun guru, kelas, kelompok, dan proyek saat ini disimpan secara lokal pada peramban perangkat ini (belum tersinkronisasi lintas perangkat). Hubungkan Supabase untuk sinkronisasi cloud antarperangkat.',
+      'Data akun guru, kelas, kelompok, dan proyek disimpan secara lokal pada peramban perangkat ini.',
   };
 }
 

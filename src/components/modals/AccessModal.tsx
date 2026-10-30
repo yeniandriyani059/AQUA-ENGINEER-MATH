@@ -11,7 +11,8 @@ import { caseById } from '../../data/cases';
 import { Modal, Field, Btn, AquaTip } from '../common/UI';
 import { Aqua } from '../common/Mascot';
 import { Icon } from '../icons/Icon';
-import { TeacherAccount } from '../../types';
+import { TeacherAccount, TeacherSession } from '../../types';
+import { signUpTeacher, signInTeacher, formatAuthError } from '../../services/authService';
 
 interface TeacherAuthPanelProps {
   onSuccess?: () => void;
@@ -19,24 +20,28 @@ interface TeacherAuthPanelProps {
 
 export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
   const { data, setData, setTeacherSession, toast, go } = useApp();
-  const [mode, setMode] = useState<'login' | 'register'>(() =>
-    data.teachers.length === 0 ? 'register' : 'login'
-  );
+  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [school, setSchool] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [err, setErr] = useState('');
+  const [infoMsg, setInfoMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr('');
+    setInfoMsg('');
 
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail) {
-      setErr('Email atau nama pengguna Guru wajib diisi.');
+      setErr('Email Guru wajib diisi.');
+      return;
+    }
+    if (!cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      setErr('Format email belum valid. Gunakan format contoh: guru@sekolah.sch.id');
       return;
     }
     if (password.length < 6) {
@@ -58,80 +63,39 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
           setBusy(false);
           return;
         }
-        const exists = data.teachers.some(
-          (t) => t.email.toLowerCase() === cleanEmail
-        );
-        if (exists) {
-          setErr('Email atau nama pengguna tersebut sudah terdaftar. Silakan pilih "Masuk Guru".');
-          setBusy(false);
-          return;
-        }
 
-        const salt = createSalt();
-        const passwordHash = await hashPassword(password, salt);
-        const newTeacher: TeacherAccount = {
-          id: uid(),
-          name: cleanName,
+        const res = await signUpTeacher({
           email: cleanEmail,
-          school: school.trim() || undefined,
-          passwordSalt: salt,
-          passwordHash,
-          createdAt: nowIso(),
-        };
-
-        setData((d) => ({
-          ...d,
-          teachers: [...d.teachers, newTeacher],
-        }));
-
-        const ts = {
-          id: newTeacher.id,
-          name: newTeacher.name,
-          email: newTeacher.email,
-          school: newTeacher.school,
-          loggedInAt: nowIso(),
-        };
-        setTeacherSession(ts);
-        toast(`Selamat datang, ${newTeacher.name}! Akun Guru berhasil dibuat.`);
-        if (onSuccess) onSuccess();
-        go('guru');
-      } else {
-        const found = data.teachers.find(
-          (t) => t.email.toLowerCase() === cleanEmail
-        );
-        if (!found) {
-          setErr(
-            data.teachers.length === 0
-              ? 'Belum ada akun Guru yang terdaftar di perangkat ini. Silakan pilih "Daftar Akun Guru" terlebih dahulu.'
-              : 'Akun Guru tidak ditemukan. Periksa kembali email/nama pengguna Anda.'
-          );
-          setBusy(false);
-          return;
-        }
-
-        const valid = await verifyPassword(
           password,
-          found.passwordSalt,
-          found.passwordHash
-        );
-        if (!valid) {
-          setErr('Kata sandi Guru belum sesuai. Silakan coba lagi.');
-          setBusy(false);
-          return;
-        }
+          fullName: cleanName,
+          schoolName: school.trim(),
+        });
 
-        const ts = {
-          id: found.id,
-          name: found.name,
-          email: found.email,
-          school: found.school,
-          loggedInAt: nowIso(),
-        };
-        setTeacherSession(ts);
-        toast(`Selamat datang kembali, ${found.name}!`);
+        if (res.requiresEmailConfirmation) {
+          setInfoMsg(
+            'Pendaftaran berhasil! Akun telah dibuat di Supabase Auth. Silakan periksa email Anda untuk verifikasi atau hubungi administrator untuk menyetujui akun.'
+          );
+          setMode('login');
+          toast('Akun berhasil didaftarkan di Supabase. Silakan cek email Anda untuk verifikasi.');
+        } else if (res.session) {
+          setTeacherSession(res.session);
+          toast(`Selamat datang, ${res.session.name}! Akun Guru berhasil dibuat di Supabase.`);
+          if (onSuccess) onSuccess();
+          go('guru');
+        }
+      } else {
+        const session = await signInTeacher({
+          email: cleanEmail,
+          password,
+        });
+
+        setTeacherSession(session);
+        toast(`Selamat datang kembali, ${session.name}!`);
         if (onSuccess) onSuccess();
         go('guru');
       }
+    } catch (authError) {
+      setErr(formatAuthError(authError));
     } finally {
       setBusy(false);
     }
@@ -139,32 +103,38 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
 
   return (
     <div>
-      <div
-        className="seg"
-        style={{ marginBottom: 14 }}
-        role="group"
-        aria-label="Pilih mode autentikasi guru"
-      >
-        <button
-          type="button"
-          aria-pressed={mode === 'login'}
-          onClick={() => {
-            setMode('login');
-            setErr('');
-          }}
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div
+          className="seg"
+          role="group"
+          aria-label="Pilih mode autentikasi guru"
         >
-          Masuk Guru
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === 'register'}
-          onClick={() => {
-            setMode('register');
-            setErr('');
-          }}
-        >
-          Daftar Akun Guru
-        </button>
+          <button
+            type="button"
+            aria-pressed={mode === 'login'}
+            onClick={() => {
+              setMode('login');
+              setErr('');
+              setInfoMsg('');
+            }}
+          >
+            Masuk Guru
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === 'register'}
+            onClick={() => {
+              setMode('register');
+              setErr('');
+              setInfoMsg('');
+            }}
+          >
+            Daftar Akun Guru
+          </button>
+        </div>
+        <span className="chip" style={{ background: '#E8FAFF', color: 'var(--ocean)', fontSize: '0.78rem' }}>
+          <Icon n="cloud" size={14} /> Supabase Auth Cloud
+        </span>
       </div>
 
       <form onSubmit={handleSubmit}>
@@ -172,16 +142,17 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
           <>
             <Field
               id="t-name"
-              label="Nama Ibu / Bapak Guru"
-              hint="Contoh: Bu Guru Yennia"
+              label="Nama Lengkap Ibu / Bapak Guru"
+              hint="Contoh: Ibu Yeni Andriyani, S.Pd."
             >
               <input
                 id="t-name"
                 className="in"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Bu Guru Yennia"
+                placeholder="Ibu Yeni Andriyani, S.Pd."
                 autoComplete="name"
+                disabled={busy}
               />
             </Field>
             <Field
@@ -196,6 +167,7 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
                 onChange={(e) => setSchool(e.target.value)}
                 placeholder="SD Negeri 1 Aqua City"
                 autoComplete="organization"
+                disabled={busy}
               />
             </Field>
           </>
@@ -203,16 +175,18 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
 
         <Field
           id="t-email"
-          label="Email atau Username Guru"
+          label="Email Guru (Terdaftar di Supabase)"
           hint="Contoh: guru@sekolah.sch.id"
         >
           <input
             id="t-email"
             className="in"
+            type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="guru@sekolah.sch.id"
-            autoComplete="username"
+            autoComplete="email"
+            disabled={busy}
           />
         </Field>
 
@@ -229,6 +203,7 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Masukkan kata sandi..."
             autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+            disabled={busy}
           />
         </Field>
 
@@ -246,8 +221,17 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Ketik ulang kata sandi..."
               autoComplete="new-password"
+              disabled={busy}
             />
           </Field>
+        )}
+
+        {infoMsg && (
+          <div style={{ marginTop: 10 }}>
+            <AquaTip mood="happy" tone="ok">
+              {infoMsg}
+            </AquaTip>
+          </div>
         )}
 
         {err && (
@@ -260,19 +244,66 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
 
         <div className="row" style={{ marginTop: 14 }}>
           <Btn kind="orange" type="submit" icon="lock" disabled={busy}>
-            {mode === 'register' ? 'Daftar & Masuk Dashboard Guru' : 'Masuk ke Dashboard Guru'}
+            {busy
+              ? 'Menghubungkan ke Supabase...'
+              : mode === 'register'
+              ? 'Daftar & Masuk Dashboard Guru'
+              : 'Masuk ke Dashboard Guru'}
           </Btn>
           <Btn
             type="button"
             icon="left"
             onClick={() => go('beranda')}
+            disabled={busy}
           >
             Kembali ke Halaman Awal
           </Btn>
         </div>
 
+        <div
+          style={{
+            marginTop: 14,
+            paddingTop: 10,
+            borderTop: '1px dashed #CBD5E1',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 8,
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span style={{ fontSize: '0.8rem', color: '#64748B' }}>
+            Mengajar di kelas tanpa akses internet?
+          </span>
+          <button
+            type="button"
+            className="chip"
+            style={{
+              cursor: 'pointer',
+              background: '#F1F5F9',
+              border: '1px solid #CBD5E1',
+              fontSize: '0.78rem',
+              fontWeight: 600,
+            }}
+            onClick={() => {
+              const localSession: TeacherSession = {
+                id: 'guru-offline',
+                name: 'Bapak/Ibu Guru (Mode Offline)',
+                email: 'guru.lokal@aquacity.local',
+                loggedInAt: new Date().toISOString(),
+              };
+              setTeacherSession(localSession);
+              toast('Masuk sebagai Guru dalam Mode Lokal/Offline.');
+              if (onSuccess) onSuccess();
+              go('guru');
+            }}
+          >
+            Masuk Mode Lokal (Offline)
+          </button>
+        </div>
+
         <p className="hint" style={{ marginTop: 10 }}>
-          Catatan: Data akun guru, kelas, dan kelompok saat ini disimpan pada peramban perangkat ini dan belum tersinkronisasi lintas perangkat selama backend belum terintegrasi.
+          Akun Guru diautentikasi langsung oleh layanan Supabase Auth & PostgreSQL Cloud. Sesi tersimpan secara aman dan persisten.
         </p>
       </form>
     </div>

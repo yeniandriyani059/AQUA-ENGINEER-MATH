@@ -998,6 +998,11 @@ export function DashboardGuru() {
                     <span className="chip" style={{ background: '#D8F7E7' }}>
                       <Icon n="check" size={14} sw={3} /> Guru Aktif: {teacherSession.name}
                     </span>
+                    {teacherSession.email && (
+                      <span className="chip" style={{ background: '#EEF3F8', fontSize: '0.8rem' }}>
+                        {teacherSession.email}
+                      </span>
+                    )}
                     {teacherSession.school && (
                       <span className="chip">{teacherSession.school}</span>
                     )}

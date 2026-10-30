@@ -1,0 +1,6 @@
+{
+  "name": "Aqua Engineer Math",
+  "description": "Lingkungan belajar numerasi digital dan rekayasa distribusi air untuk siswa kelas 5 SD. Hitung • Rancang • Bangun • Selamatkan Kota!",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

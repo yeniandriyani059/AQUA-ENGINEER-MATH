@@ -243,30 +243,65 @@ export async function deleteGroupInSupabase(groupId: string): Promise<void> {
 export async function findStudentGroupInSupabase(
   classCodeInput: string,
   groupCodeInput: string
-): Promise<{ classRoom: ClassRoom; group: StudentGroup } | null> {
+): Promise<{ ok: boolean; error?: string; classRoom?: ClassRoom; group?: StudentGroup }> {
   const normClassCode = normalizeCode(classCodeInput);
   const normGroupCode = normalizeCode(groupCodeInput);
 
-  if (!normClassCode || !normGroupCode) return null;
+  if (!normClassCode) {
+    return { ok: false, error: 'Masukkan Kode Kelas terlebih dahulu (contoh: AQUA-5A-26).' };
+  }
+  if (!normGroupCode) {
+    return { ok: false, error: 'Masukkan Kode Kelompok yang diberikan gurumu (contoh: LUMBA-01).' };
+  }
 
-  const { data: classes } = await supabase
+  const { data: classes, error: cErr } = await supabase
     .from('classes')
     .select('*');
 
-  if (!classes || classes.length === 0) return null;
+  if (cErr) {
+    console.error('Error fetching classes:', cErr);
+    return { ok: false, error: 'Gagal terhubung ke database. Periksa koneksi internet Anda.' };
+  }
+
+  if (!classes || classes.length === 0) {
+    return {
+      ok: false,
+      error: `Kode Kelas "${normClassCode}" tidak ditemukan. Pastikan Ibu/Bapak Guru sudah membuat kelas di Dashboard Guru.`,
+    };
+  }
 
   const foundClass = classes.find((c) => normalizeCode(c.class_code) === normClassCode);
-  if (!foundClass) return null;
+  if (!foundClass) {
+    return {
+      ok: false,
+      error: `Kode Kelas "${normClassCode}" tidak ditemukan. Coba periksa kembali huruf dan angkanya bersama gurumu ya!`,
+    };
+  }
 
-  const { data: groups } = await supabase
+  const { data: groups, error: gErr } = await supabase
     .from('student_groups')
     .select('*')
     .eq('class_id', foundClass.id);
 
-  if (!groups || groups.length === 0) return null;
+  if (gErr) {
+    console.error('Error fetching groups:', gErr);
+    return { ok: false, error: 'Gagal mengambil data kelompok.' };
+  }
+
+  if (!groups || groups.length === 0) {
+    return {
+      ok: false,
+      error: `Belum ada kelompok yang terdaftar pada kelas ${foundClass.class_name} (${foundClass.class_code}).`,
+    };
+  }
 
   const foundGroup = groups.find((g) => normalizeCode(g.group_code) === normGroupCode);
-  if (!foundGroup) return null;
+  if (!foundGroup) {
+    return {
+      ok: false,
+      error: `Kode Kelompok "${normGroupCode}" belum terdaftar pada kelas ${foundClass.class_name} (${foundClass.class_code}).`,
+    };
+  }
 
   const classRoom: ClassRoom = {
     id: foundClass.id,
@@ -289,5 +324,5 @@ export async function findStudentGroupInSupabase(
     updatedAt: foundGroup.updated_at || foundGroup.created_at,
   };
 
-  return { classRoom, group };
+  return { ok: true, classRoom, group };
 }

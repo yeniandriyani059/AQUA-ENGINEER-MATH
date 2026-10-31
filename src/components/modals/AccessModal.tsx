@@ -11,7 +11,7 @@ import { caseById } from '../../data/cases';
 import { Modal, Field, Btn, AquaTip } from '../common/UI';
 import { Aqua } from '../common/Mascot';
 import { Icon } from '../icons/Icon';
-import { TeacherAccount, TeacherSession } from '../../types';
+import { TeacherAccount, TeacherSession, SessionInfo } from '../../types';
 import { signUpTeacher, signInTeacher, formatAuthError } from '../../services/authService';
 import { findStudentGroupInSupabase } from '../../services/classGroupService';
 
@@ -290,48 +290,52 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
     setBusy(true);
 
     try {
-      let res = validateStudentAccess(
-        data.classes,
-        data.groups,
-        classCode,
-        groupCode
-      );
+      // 1. Primary: Lookup live in Supabase
+      const sbResult = await findStudentGroupInSupabase(classCode, groupCode);
 
-      let sess = res.session;
+      let sess: SessionInfo | null = null;
+      let errorMsg = '';
 
-      if (!res.ok || !sess) {
-        // Search live in Supabase
-        const found = await findStudentGroupInSupabase(classCode, groupCode);
-        if (found) {
-          const { classRoom, group } = found;
-          setData((d) => {
-            const hasClass = d.classes.some((c) => c.id === classRoom.id);
-            const hasGroup = d.groups.some((g) => g.id === group.id);
-            return {
-              ...d,
-              classes: hasClass ? d.classes : [...d.classes, classRoom],
-              groups: hasGroup ? d.groups : [...d.groups, group],
-            };
-          });
-
-          sess = {
-            groupId: group.id,
-            classId: classRoom.id,
-            classCode: classRoom.code,
-            groupCode: group.code,
-            kelas: classRoom.name,
-            name: group.name,
-            members: group.members,
-            codeHash: group.codeHash,
+      if (sbResult.ok && sbResult.classRoom && sbResult.group) {
+        const { classRoom, group } = sbResult;
+        setData((d) => {
+          const hasClass = d.classes.some((c) => c.id === classRoom.id);
+          const hasGroup = d.groups.some((g) => g.id === group.id);
+          return {
+            ...d,
+            classes: hasClass ? d.classes : [...d.classes, classRoom],
+            groups: hasGroup ? d.groups : [...d.groups, group],
           };
+        });
+
+        sess = {
+          groupId: group.id,
+          classId: classRoom.id,
+          classCode: classRoom.code,
+          groupCode: group.code,
+          kelas: classRoom.name,
+          name: group.name,
+          members: group.members,
+          codeHash: group.codeHash,
+        };
+      } else {
+        errorMsg = sbResult.error || '';
+        // 2. Fallback: Check local memory/cache
+        const localRes = validateStudentAccess(
+          data.classes,
+          data.groups,
+          classCode,
+          groupCode
+        );
+        if (localRes.ok && localRes.session) {
+          sess = localRes.session;
+        } else if (!errorMsg) {
+          errorMsg = localRes.error || 'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!';
         }
       }
 
       if (!sess) {
-        setErr(
-          res.error ||
-            'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!'
-        );
+        setErr(errorMsg || 'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!');
         return;
       }
 

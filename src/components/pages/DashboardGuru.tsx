@@ -35,6 +35,14 @@ import {
   deleteProjectById,
   projectBelongsToGroup,
 } from '../../utils/access';
+import {
+  createClassInSupabase,
+  updateClassInSupabase,
+  deleteClassInSupabase,
+  createGroupInSupabase,
+  updateGroupInSupabase,
+  deleteGroupInSupabase,
+} from '../../services/classGroupService';
 import { DesignCanvas } from '../canvas/DesignCanvas';
 import { Aqua } from '../common/Mascot';
 import { Btn, Stat, Field, AquaTip, Modal } from '../common/UI';
@@ -659,11 +667,15 @@ export function DashboardGuru() {
   }
 
   // Handlers for Class & Group Management
-  const handleCreateClass = (e: React.FormEvent) => {
+  const handleCreateClass = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = newClassName.trim();
     if (!cleanName) {
       toast('Masukkan nama kelas terlebih dahulu (contoh: 5A).', true);
+      return;
+    }
+    if (!teacherSession?.id) {
+      toast('Sesi Guru belum aktif. Silakan masuk terlebih dahulu.', true);
       return;
     }
 
@@ -675,24 +687,24 @@ export function DashboardGuru() {
       return;
     }
 
-    const existingClassCodes = classes.map((c) => c.code);
-    const generatedCode = generateClassCode(cleanName, existingClassCodes);
+    try {
+      const existingClassCodes = classes.map((c) => c.code);
+      const newClass = await createClassInSupabase({
+        teacherId: teacherSession.id,
+        className: cleanName,
+        existingCodes: existingClassCodes,
+      });
 
-    const newClass: ClassRoom = {
-      id: uid(),
-      teacherId: teacherSession.id,
-      name: cleanName,
-      code: generatedCode,
-      createdAt: nowIso(),
-    };
-
-    setData((d) => ({
-      ...d,
-      classes: [...d.classes, newClass],
-    }));
-    setSelectedClassId(newClass.id);
-    setNewClassName('');
-    toast(`Kelas "${newClass.name}" berhasil dibuat dengan Kode Kelas: ${newClass.code}`);
+      setData((d) => ({
+        ...d,
+        classes: [...d.classes, newClass],
+      }));
+      setSelectedClassId(newClass.id);
+      setNewClassName('');
+      toast(`Kelas "${newClass.name}" berhasil dibuat dengan Kode Kelas: ${newClass.code}`);
+    } catch (err: any) {
+      toast(err.message || 'Gagal menyimpan kelas. Periksa koneksi Anda.', true);
+    }
   };
 
   const startEditClass = (cls: ClassRoom) => {
@@ -701,7 +713,7 @@ export function DashboardGuru() {
     setEditClassName(cls.name);
   };
 
-  const handleSaveClassEdit = (cls: ClassRoom) => {
+  const handleSaveClassEdit = async (cls: ClassRoom) => {
     const cleanName = editClassName.trim();
     if (!cleanName) {
       toast('Nama kelas tidak boleh kosong.', true);
@@ -718,41 +730,53 @@ export function DashboardGuru() {
       return;
     }
 
-    const oldName = cls.name;
-    let nextSession = session;
-    setData((d) => {
-      const res = updateClassById(d, session, cls.id, cleanName);
-      nextSession = res.session;
-      return res.data;
-    });
-    if (nextSession !== session) {
-      setSession(nextSession);
-    }
-    if (filterKelas === oldName) {
-      setFilterKelas(cleanName);
-    }
+    try {
+      await updateClassInSupabase(cls.id, cleanName);
 
-    setEditingClassId(null);
-    toast(`Nama kelas berhasil diperbarui menjadi "${cleanName}" (Kode Kelas: ${cls.code} tetap sama).`);
+      const oldName = cls.name;
+      let nextSession = session;
+      setData((d) => {
+        const res = updateClassById(d, session, cls.id, cleanName);
+        nextSession = res.session;
+        return res.data;
+      });
+      if (nextSession !== session) {
+        setSession(nextSession);
+      }
+      if (filterKelas === oldName) {
+        setFilterKelas(cleanName);
+      }
+
+      setEditingClassId(null);
+      toast(`Nama kelas berhasil diperbarui menjadi "${cleanName}".`);
+    } catch (err: any) {
+      toast(err.message || 'Gagal memperbarui kelas.', true);
+    }
   };
 
-  const handleDeleteClass = (cls: ClassRoom) => {
-    let nextSession = session;
-    setData((d) => {
-      const res = deleteClassById(d, session, cls.id);
-      nextSession = res.session;
-      return res.data;
-    });
-    if (nextSession !== session) {
-      setSession(nextSession);
-    }
-    if (filterKelas === cls.name) {
-      setFilterKelas('SEMUA');
-    }
+  const handleDeleteClass = async (cls: ClassRoom) => {
+    try {
+      await deleteClassInSupabase(cls.id);
 
-    setConfirmDeleteClassId(null);
-    setEditingClassId(null);
-    toast(`Kelas "${cls.name}" (${cls.code}) berhasil dihapus.`);
+      let nextSession = session;
+      setData((d) => {
+        const res = deleteClassById(d, session, cls.id);
+        nextSession = res.session;
+        return res.data;
+      });
+      if (nextSession !== session) {
+        setSession(nextSession);
+      }
+      if (filterKelas === cls.name) {
+        setFilterKelas('SEMUA');
+      }
+
+      setConfirmDeleteClassId(null);
+      setEditingClassId(null);
+      toast(`Kelas "${cls.name}" (${cls.code}) berhasil dihapus.`);
+    } catch (err: any) {
+      toast(err.message || 'Gagal menghapus kelas.', true);
+    }
   };
 
   const handleCreateGroup = async (e: React.FormEvent) => {
@@ -775,30 +799,27 @@ export function DashboardGuru() {
       return;
     }
 
-    const existingGroupCodes = activeClassGroups.map((g) => g.code);
-    const generatedGroupCode = generateGroupCode(cleanGroupName, existingGroupCodes);
-    const codeHash = await sha(generatedGroupCode);
+    try {
+      const existingGroupCodes = activeClassGroups.map((g) => g.code);
+      const newGrp = await createGroupInSupabase({
+        classId: activeClass.id,
+        className: activeClass.name,
+        classCode: activeClass.code,
+        groupName: cleanGroupName,
+        members: newGroupMembers.trim(),
+        existingCodesInClass: existingGroupCodes,
+      });
 
-    const newGrp: StudentGroup = {
-      id: uid(),
-      classId: activeClass.id,
-      className: activeClass.name,
-      classCode: activeClass.code,
-      name: cleanGroupName,
-      code: generatedGroupCode,
-      codeHash,
-      members: newGroupMembers.trim(),
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-
-    setData((d) => ({
-      ...d,
-      groups: [...d.groups, newGrp],
-    }));
-    setNewGroupName('');
-    setNewGroupMembers('');
-    toast(`Kelompok "${newGrp.name}" dibuat! Kode Kelompok: ${newGrp.code}`);
+      setData((d) => ({
+        ...d,
+        groups: [...d.groups, newGrp],
+      }));
+      setNewGroupName('');
+      setNewGroupMembers('');
+      toast(`Kelompok "${newGrp.name}" berhasil dibuat! Kode Kelompok: ${newGrp.code}`);
+    } catch (err: any) {
+      toast(err.message || 'Gagal menyimpan kelompok.', true);
+    }
   };
 
   const startEditGroup = (g: StudentGroup) => {
@@ -808,7 +829,7 @@ export function DashboardGuru() {
     setEditGroupMembers(g.members);
   };
 
-  const handleSaveGroupEdit = (g: StudentGroup) => {
+  const handleSaveGroupEdit = async (g: StudentGroup) => {
     const cleanName = editGroupName.trim();
     const cleanMembers = editGroupMembers.trim();
     if (!cleanName) {
@@ -827,34 +848,46 @@ export function DashboardGuru() {
       return;
     }
 
-    let nextSession = session;
-    setData((d) => {
-      const res = updateGroupById(d, session, g.id, cleanName, cleanMembers, nowIso());
-      nextSession = res.session;
-      return res.data;
-    });
-    if (nextSession !== session) {
-      setSession(nextSession);
-    }
+    try {
+      await updateGroupInSupabase(g.id, cleanName, cleanMembers);
 
-    setEditingGroupId(null);
-    toast(`Data kelompok "${cleanName}" berhasil diperbarui (Kode Kelompok: ${g.code} tetap sama).`);
+      let nextSession = session;
+      setData((d) => {
+        const res = updateGroupById(d, session, g.id, cleanName, cleanMembers, nowIso());
+        nextSession = res.session;
+        return res.data;
+      });
+      if (nextSession !== session) {
+        setSession(nextSession);
+      }
+
+      setEditingGroupId(null);
+      toast(`Data kelompok "${cleanName}" berhasil diperbarui.`);
+    } catch (err: any) {
+      toast(err.message || 'Gagal memperbarui kelompok.', true);
+    }
   };
 
-  const handleDeleteGroup = (g: StudentGroup) => {
-    let nextSession = session;
-    setData((d) => {
-      const res = deleteGroupById(d, session, g.id);
-      nextSession = res.session;
-      return res.data;
-    });
-    if (nextSession !== session) {
-      setSession(nextSession);
-    }
+  const handleDeleteGroup = async (g: StudentGroup) => {
+    try {
+      await deleteGroupInSupabase(g.id);
 
-    setConfirmDeleteGroupId(null);
-    setEditingGroupId(null);
-    toast(`Kelompok "${g.name}" (${g.code}) berhasil dihapus dari Kelas ${g.className}.`);
+      let nextSession = session;
+      setData((d) => {
+        const res = deleteGroupById(d, session, g.id);
+        nextSession = res.session;
+        return res.data;
+      });
+      if (nextSession !== session) {
+        setSession(nextSession);
+      }
+
+      setConfirmDeleteGroupId(null);
+      setEditingGroupId(null);
+      toast(`Kelompok "${g.name}" (${g.code}) berhasil dihapus.`);
+    } catch (err: any) {
+      toast(err.message || 'Gagal menghapus kelompok.', true);
+    }
   };
 
   const handleResetGroupCode = async (g: StudentGroup) => {

@@ -13,6 +13,7 @@ import { Aqua } from '../common/Mascot';
 import { Icon } from '../icons/Icon';
 import { TeacherAccount, TeacherSession } from '../../types';
 import { signUpTeacher, signInTeacher, formatAuthError } from '../../services/authService';
+import { findStudentGroupInSupabase } from '../../services/classGroupService';
 
 interface TeacherAuthPanelProps {
   onSuccess?: () => void;
@@ -73,13 +74,13 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
 
         if (res.requiresEmailConfirmation) {
           setInfoMsg(
-            'Pendaftaran berhasil! Akun telah dibuat di Supabase Auth. Silakan periksa email Anda untuk verifikasi atau hubungi administrator untuk menyetujui akun.'
+            'Pendaftaran berhasil! Silakan periksa email Anda untuk verifikasi akun jika diperlukan.'
           );
           setMode('login');
-          toast('Akun berhasil didaftarkan di Supabase. Silakan cek email Anda untuk verifikasi.');
+          toast('Pendaftaran berhasil! Silakan periksa email Anda untuk verifikasi akun jika diperlukan.');
         } else if (res.session) {
           setTeacherSession(res.session);
-          toast(`Selamat datang, ${res.session.name}! Akun Guru berhasil dibuat di Supabase.`);
+          toast(`Selamat datang, ${res.session.name}!`);
           if (onSuccess) onSuccess();
           go('guru');
         }
@@ -132,9 +133,6 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
             Daftar Akun Guru
           </button>
         </div>
-        <span className="chip" style={{ background: '#E8FAFF', color: 'var(--ocean)', fontSize: '0.78rem' }}>
-          <Icon n="cloud" size={14} /> Supabase Auth Cloud
-        </span>
       </div>
 
       <form onSubmit={handleSubmit}>
@@ -175,7 +173,7 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
 
         <Field
           id="t-email"
-          label="Email Guru (Terdaftar di Supabase)"
+          label="Email Guru"
           hint="Contoh: guru@sekolah.sch.id"
         >
           <input
@@ -245,7 +243,7 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
         <div className="row" style={{ marginTop: 14 }}>
           <Btn kind="orange" type="submit" icon="lock" disabled={busy}>
             {busy
-              ? 'Menghubungkan ke Supabase...'
+              ? 'Memproses...'
               : mode === 'register'
               ? 'Daftar & Masuk Dashboard Guru'
               : 'Masuk ke Dashboard Guru'}
@@ -259,10 +257,6 @@ export function TeacherAuthPanel({ onSuccess }: TeacherAuthPanelProps) {
             Kembali ke Halaman Awal
           </Btn>
         </div>
-
-        <p className="hint" style={{ marginTop: 12 }}>
-          Akun Guru diautentikasi langsung oleh layanan Supabase Auth & PostgreSQL Cloud. Sesi tersimpan secara aman dan persisten.
-        </p>
       </form>
     </div>
   );
@@ -288,45 +282,83 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
   const [groupCode, setGroupCode] = useState('');
   const [err, setErr] = useState('');
 
-  const handleStudentSubmit = (e: React.FormEvent) => {
+  const [busy, setBusy] = useState(false);
+
+  const handleStudentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr('');
+    setBusy(true);
 
-    const res = validateStudentAccess(
-      data.classes,
-      data.groups,
-      classCode,
-      groupCode
-    );
-
-    if (!res.ok || !res.session || !res.group || !res.classRoom) {
-      setErr(
-        res.error ||
-          'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!'
+    try {
+      let res = validateStudentAccess(
+        data.classes,
+        data.groups,
+        classCode,
+        groupCode
       );
-      return;
-    }
 
-    const sess = res.session;
-    setSession(sess);
+      let sess = res.session;
 
-    const groupProjs = data.projects.filter((p) => sameGroup(p.group, sess));
-    groupProjs.forEach((p) => unlock(p.id));
+      if (!res.ok || !sess) {
+        // Search live in Supabase
+        const found = await findStudentGroupInSupabase(classCode, groupCode);
+        if (found) {
+          const { classRoom, group } = found;
+          setData((d) => {
+            const hasClass = d.classes.some((c) => c.id === classRoom.id);
+            const hasGroup = d.groups.some((g) => g.id === group.id);
+            return {
+              ...d,
+              classes: hasClass ? d.classes : [...d.classes, classRoom],
+              groups: hasGroup ? d.groups : [...d.groups, group],
+            };
+          });
 
-    toast(`Selamat datang, ${sess.name} (Kelas ${sess.kelas})!`);
-    onClose();
+          sess = {
+            groupId: group.id,
+            classId: classRoom.id,
+            classCode: classRoom.code,
+            groupCode: group.code,
+            kelas: classRoom.name,
+            name: group.name,
+            members: group.members,
+            codeHash: group.codeHash,
+          };
+        }
+      }
 
-    if (pending) {
-      startMission(pending, sess);
-    } else if (groupProjs.length > 0) {
-      const latest = groupProjs
-        .slice()
-        .sort((a, b) => (b.updated > a.updated ? 1 : -1))[0];
-      setData((d) => ({ ...d, currentId: latest.id }));
-      go('dashboard');
-    } else {
-      setData((d) => ({ ...d, currentId: null }));
-      go('dashboard');
+      if (!sess) {
+        setErr(
+          res.error ||
+            'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!'
+        );
+        return;
+      }
+
+      setSession(sess);
+
+      const groupProjs = data.projects.filter((p) => sameGroup(p.group, sess));
+      groupProjs.forEach((p) => unlock(p.id));
+
+      toast(`Selamat datang, ${sess.name} (Kelas ${sess.kelas})!`);
+      onClose();
+
+      if (pending) {
+        startMission(pending, sess);
+      } else if (groupProjs.length > 0) {
+        const latest = groupProjs
+          .slice()
+          .sort((a, b) => (b.updated > a.updated ? 1 : -1))[0];
+        setData((d) => ({ ...d, currentId: latest.id }));
+        go('dashboard');
+      } else {
+        setData((d) => ({ ...d, currentId: null }));
+        go('dashboard');
+      }
+    } catch {
+      setErr('Gagal memverifikasi Kode Kelas & Kode Kelompok. Periksa jaringan Anda.');
+    } finally {
+      setBusy(false);
     }
   };
 

@@ -24,7 +24,7 @@ export function formatAuthError(err: unknown): string {
     return 'Email atau kata sandi tidak sesuai. Silakan periksa kembali.';
   }
   if (lower.includes('user already registered') || lower.includes('already exists')) {
-    return 'Email ini sudah terdaftar di Supabase. Silakan gunakan tab "Masuk Guru".';
+    return 'Email ini sudah terdaftar. Silakan gunakan tab "Masuk Guru".';
   }
   if (lower.includes('password should be at least 6 characters')) {
     return 'Kata sandi minimal harus 6 karakter.';
@@ -33,13 +33,13 @@ export function formatAuthError(err: unknown): string {
     return 'Silakan masukkan kata sandi yang valid.';
   }
   if (lower.includes('email not confirmed')) {
-    return 'Email belum dikonfirmasi. Jika verifikasi email aktif pada Supabase Auth, silakan cek kotak masuk email Anda.';
+    return 'Email belum dikonfirmasi. Silakan periksa kotak masuk email Anda untuk melakukan verifikasi.';
   }
   if (lower.includes('rate limit') || lower.includes('too many requests')) {
     return 'Terlalu banyak percobaan. Harap tunggu beberapa saat sebelum mencoba kembali.';
   }
   if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('fetch')) {
-    return 'Gagal terhubung ke Supabase. Periksa koneksi internet Anda.';
+    return 'Gagal terhubung ke layanan. Periksa koneksi internet Anda.';
   }
   return msg;
 }

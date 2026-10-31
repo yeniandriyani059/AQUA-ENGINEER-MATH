@@ -6,6 +6,7 @@ import { caseById } from '../data/cases';
 import { supabase } from '../lib/supabase';
 import type { AuthChangeEvent, Session as SupabaseSession } from '@supabase/supabase-js';
 import { fetchCurrentTeacherSession, signOutTeacher } from '../services/authService';
+import { fetchTeacherClassesAndGroups } from '../services/classGroupService';
 
 interface AppContextValue {
   data: StoredData;
@@ -24,6 +25,7 @@ interface AppContextValue {
   setTeacherSession: (ts: TeacherSession | null) => void;
   logoutStudent: () => void;
   logoutTeacher: () => void;
+  refreshTeacherData: () => Promise<void>;
   purgeTrialData: () => void;
   startMission: (caseId: string, sess?: SessionInfo | null, forceNew?: boolean) => void;
   openAccess: (pendingMission?: string | null, initialRole?: 'siswa' | 'guru') => void;
@@ -231,6 +233,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [setTeacherSession]);
 
+  const refreshTeacherData = useCallback(async () => {
+    if (!teacherSession?.id) return;
+    try {
+      const { classes, groups } = await fetchTeacherClassesAndGroups(teacherSession.id);
+      setData((d) => ({
+        ...d,
+        classes,
+        groups,
+      }));
+    } catch (e) {
+      console.warn('Gagal menyinkronkan data kelas & kelompok Supabase:', e);
+    }
+  }, [teacherSession?.id]);
+
+  // Sync classes & groups from Supabase whenever active teacherSession changes
+  useEffect(() => {
+    if (teacherSession?.id) {
+      refreshTeacherData();
+    } else {
+      setData((d) => ({
+        ...d,
+        classes: [],
+        groups: [],
+      }));
+    }
+  }, [teacherSession?.id, refreshTeacherData]);
+
   const toast = useCallback((msg: string, err?: boolean) => {
     setToastM({ msg, err });
     if (tRef.current) clearTimeout(tRef.current);
@@ -396,6 +425,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setTeacherSession,
         logoutStudent,
         logoutTeacher,
+        refreshTeacherData,
         purgeTrialData,
         startMission,
         openAccess,

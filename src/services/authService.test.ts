@@ -20,7 +20,7 @@ describe('formatAuthError', () => {
 
   it('translates network error to Indonesian', () => {
     const res = formatAuthError({ message: 'Failed to fetch' });
-    assert.match(res, /Gagal terhubung ke Supabase/);
+    assert.match(res, /Gagal terhubung ke layanan/);
   });
 
   it('handles null or undefined gracefully', () => {

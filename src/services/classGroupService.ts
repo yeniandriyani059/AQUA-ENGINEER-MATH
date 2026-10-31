@@ -2,6 +2,32 @@ import { supabase } from '../lib/supabase';
 import { ClassRoom, StudentGroup } from '../types';
 import { generateClassCode, generateGroupCode, normalizeCode } from '../utils/access';
 
+/**
+ * Konversi input anggota (string koma atau array) menjadi Array String ["Aisyah", "Bima", "Rara"]
+ * Menghilangkan spasi berlebih dan mengabaikan item kosong.
+ */
+export function parseMembersInput(membersInput: string | string[] | null | undefined): string[] {
+  if (!membersInput) return [];
+  if (Array.isArray(membersInput)) {
+    return membersInput.map((m) => String(m).trim()).filter(Boolean);
+  }
+  return String(membersInput)
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Konversi output anggota dari Supabase (Array String atau String) menjadi format baca "Aisyah, Bima, Rara"
+ */
+export function formatMembersOutput(membersFromDb: string[] | string | null | undefined): string {
+  if (!membersFromDb) return '';
+  if (Array.isArray(membersFromDb)) {
+    return membersFromDb.map((m) => String(m).trim()).filter(Boolean).join(', ');
+  }
+  return String(membersFromDb).trim();
+}
+
 export async function fetchTeacherClassesAndGroups(teacherId: string): Promise<{
   classes: ClassRoom[];
   groups: StudentGroup[];
@@ -55,7 +81,7 @@ export async function fetchTeacherClassesAndGroups(teacherId: string): Promise<{
       name: g.group_name,
       code: g.group_code,
       codeHash: g.group_code,
-      members: g.members || '',
+      members: formatMembersOutput(g.members),
       createdAt: g.created_at,
       updatedAt: g.updated_at || g.created_at,
     };
@@ -88,7 +114,7 @@ export async function createClassInSupabase({
 
   if (error) {
     console.error('Error creating class in Supabase:', error);
-    throw new Error('Gagal menyimpan kelas ke Supabase: ' + (error.message || ''));
+    throw new Error('Gagal menyimpan kelas. Periksa koneksi Anda.');
   }
 
   return {
@@ -112,7 +138,7 @@ export async function updateClassInSupabase(
 
   if (error) {
     console.error('Error updating class in Supabase:', error);
-    throw new Error('Gagal memperbarui nama kelas di Supabase: ' + (error.message || ''));
+    throw new Error('Gagal memperbarui nama kelas.');
   }
 }
 
@@ -126,7 +152,7 @@ export async function deleteClassInSupabase(classId: string): Promise<void> {
 
   if (error) {
     console.error('Error deleting class in Supabase:', error);
-    throw new Error('Gagal menghapus kelas dari Supabase: ' + (error.message || ''));
+    throw new Error('Gagal menghapus kelas.');
   }
 }
 
@@ -146,7 +172,7 @@ export async function createGroupInSupabase({
   existingCodesInClass: string[];
 }): Promise<StudentGroup> {
   const cleanName = groupName.trim();
-  const cleanMembers = members.trim();
+  const membersArray = parseMembersInput(members);
   const groupCode = generateGroupCode(cleanName, existingCodesInClass);
 
   const { data, error } = await supabase
@@ -155,14 +181,14 @@ export async function createGroupInSupabase({
       class_id: classId,
       group_name: cleanName,
       group_code: groupCode,
-      members: cleanMembers,
+      members: membersArray,
     })
     .select()
     .single();
 
   if (error) {
     console.error('Error creating group in Supabase:', error);
-    throw new Error('Gagal menyimpan kelompok ke Supabase: ' + (error.message || ''));
+    throw new Error('Gagal menyimpan kelompok. Periksa koneksi Anda.');
   }
 
   return {
@@ -173,7 +199,7 @@ export async function createGroupInSupabase({
     name: data.group_name,
     code: data.group_code,
     codeHash: data.group_code,
-    members: data.members || '',
+    members: formatMembersOutput(data.members || membersArray),
     createdAt: data.created_at,
     updatedAt: data.updated_at || data.created_at,
   };
@@ -185,20 +211,20 @@ export async function updateGroupInSupabase(
   newMembers: string
 ): Promise<void> {
   const cleanName = newGroupName.trim();
-  const cleanMembers = newMembers.trim();
+  const membersArray = parseMembersInput(newMembers);
 
   const { error } = await supabase
     .from('student_groups')
     .update({
       group_name: cleanName,
-      members: cleanMembers,
+      members: membersArray,
       updated_at: new Date().toISOString(),
     })
     .eq('id', groupId);
 
   if (error) {
     console.error('Error updating group in Supabase:', error);
-    throw new Error('Gagal memperbarui kelompok di Supabase: ' + (error.message || ''));
+    throw new Error('Gagal memperbarui kelompok.');
   }
 }
 
@@ -210,7 +236,7 @@ export async function deleteGroupInSupabase(groupId: string): Promise<void> {
 
   if (error) {
     console.error('Error deleting group from Supabase:', error);
-    throw new Error('Gagal menghapus kelompok dari Supabase: ' + (error.message || ''));
+    throw new Error('Gagal menghapus kelompok.');
   }
 }
 
@@ -258,7 +284,7 @@ export async function findStudentGroupInSupabase(
     name: foundGroup.group_name,
     code: foundGroup.group_code,
     codeHash: foundGroup.group_code,
-    members: foundGroup.members || '',
+    members: formatMembersOutput(foundGroup.members),
     createdAt: foundGroup.created_at,
     updatedAt: foundGroup.updated_at || foundGroup.created_at,
   };

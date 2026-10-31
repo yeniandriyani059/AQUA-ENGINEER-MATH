@@ -6,7 +6,7 @@ import { caseById } from '../data/cases';
 import { supabase } from '../lib/supabase';
 import type { AuthChangeEvent, Session as SupabaseSession } from '@supabase/supabase-js';
 import { fetchCurrentTeacherSession, signOutTeacher } from '../services/authService';
-import { fetchTeacherClassesAndGroups } from '../services/classGroupService';
+import { fetchTeacherClassesAndGroups, syncLocalClassesAndGroupsToSupabase } from '../services/classGroupService';
 
 interface AppContextValue {
   data: StoredData;
@@ -233,14 +233,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [setTeacherSession]);
 
+  const dataRef = useRef(data);
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
   const refreshTeacherData = useCallback(async () => {
-    if (!teacherSession?.id) return;
+    const currentTeacherId = teacherSession?.id;
+    if (!currentTeacherId) return;
     try {
-      const { classes, groups } = await fetchTeacherClassesAndGroups(teacherSession.id);
+      // 1. Sync any unsynced local classes & groups to Supabase first
+      await syncLocalClassesAndGroupsToSupabase(
+        currentTeacherId,
+        dataRef.current.classes,
+        dataRef.current.groups
+      );
+
+      // 2. Fetch latest data from Supabase
+      const { classes, groups } = await fetchTeacherClassesAndGroups(currentTeacherId);
       setData((d) => ({
         ...d,
-        classes,
-        groups,
+        classes: classes.length > 0 ? classes : d.classes,
+        groups: groups.length > 0 ? groups : d.groups,
       }));
     } catch (e) {
       console.warn('Gagal menyinkronkan data kelas & kelompok Supabase:', e);
@@ -258,7 +272,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         groups: [],
       }));
     }
-  }, [teacherSession?.id, refreshTeacherData]);
+  }, [teacherSession?.id]);
 
   const toast = useCallback((msg: string, err?: boolean) => {
     setToastM({ msg, err });

@@ -240,6 +240,80 @@ export async function deleteGroupInSupabase(groupId: string): Promise<void> {
   }
 }
 
+export async function syncLocalClassesAndGroupsToSupabase(
+  teacherId: string,
+  localClasses: ClassRoom[],
+  localGroups: StudentGroup[]
+): Promise<void> {
+  if (!teacherId || localClasses.length === 0) return;
+
+  try {
+    const { data: dbClasses } = await supabase
+      .from('classes')
+      .select('*')
+      .eq('teacher_id', teacherId);
+
+    const existingClassCodes = new Set((dbClasses || []).map((c) => normalizeCode(c.class_code)));
+    const existingClassIdMap = new Map((dbClasses || []).map((c) => [c.id, c.id]));
+
+    for (const lc of localClasses) {
+      if (!existingClassCodes.has(normalizeCode(lc.code)) && !existingClassIdMap.has(lc.id)) {
+        console.log('[AEM Sync] Syncing local class to Supabase:', lc.name, lc.code);
+        const { data: insertedClass, error: cErr } = await supabase
+          .from('classes')
+          .insert({
+            id: lc.id,
+            teacher_id: teacherId,
+            class_name: lc.name,
+            class_code: lc.code,
+            created_at: lc.createdAt || new Date().toISOString(),
+          })
+          .select()
+          .maybeSingle();
+
+        if (cErr) {
+          console.error('[AEM Sync Error] Failed to sync local class:', cErr.message);
+        } else if (insertedClass) {
+          existingClassIdMap.set(insertedClass.id, insertedClass.id);
+        }
+      }
+    }
+
+    const classIds = Array.from(existingClassIdMap.keys());
+    if (classIds.length === 0) return;
+
+    const { data: dbGroups } = await supabase
+      .from('student_groups')
+      .select('*')
+      .in('class_id', classIds);
+
+    const existingGroupCodes = new Set((dbGroups || []).map((g) => normalizeCode(g.group_code)));
+
+    for (const lg of localGroups) {
+      if (existingClassIdMap.has(lg.classId) && !existingGroupCodes.has(normalizeCode(lg.code))) {
+        console.log('[AEM Sync] Syncing local group to Supabase:', lg.name, lg.code);
+        const membersArray = parseMembersInput(lg.members);
+        const { error: gErr } = await supabase
+          .from('student_groups')
+          .insert({
+            id: lg.id,
+            class_id: lg.classId,
+            group_name: lg.name,
+            group_code: lg.code,
+            members: membersArray,
+            created_at: lg.createdAt || new Date().toISOString(),
+          });
+
+        if (gErr) {
+          console.error('[AEM Sync Error] Failed to sync local group:', gErr.message);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[AEM Sync] Exception while syncing local data to Supabase:', e);
+  }
+}
+
 export async function findStudentGroupInSupabase(
   classCodeInput: string,
   groupCodeInput: string
@@ -247,10 +321,19 @@ export async function findStudentGroupInSupabase(
   const normClassCode = normalizeCode(classCodeInput);
   const normGroupCode = normalizeCode(groupCodeInput);
 
+  console.log('[AEM Diagnostik Access] Memulai pencarian siswa:', {
+    classCodeInput,
+    groupCodeInput,
+    normClassCode,
+    normGroupCode,
+  });
+
   if (!normClassCode) {
+    console.warn('[AEM Diagnostik Access] Input Kode Kelas kosong.');
     return { ok: false, error: 'Masukkan Kode Kelas terlebih dahulu (contoh: AQUA-5A-26).' };
   }
   if (!normGroupCode) {
+    console.warn('[AEM Diagnostik Access] Input Kode Kelompok kosong.');
     return { ok: false, error: 'Masukkan Kode Kelompok yang diberikan gurumu (contoh: LUMBA-01).' };
   }
 
@@ -259,24 +342,36 @@ export async function findStudentGroupInSupabase(
     .select('*');
 
   if (cErr) {
-    console.error('Error fetching classes:', cErr);
+    console.error('[AEM Diagnostik Access] Query tabel classes gagal dari Supabase:', {
+      message: cErr.message,
+      details: cErr.details,
+      hint: cErr.hint,
+      code: cErr.code,
+    });
     return { ok: false, error: 'Gagal terhubung ke database. Periksa koneksi internet Anda.' };
   }
 
-  if (!classes || classes.length === 0) {
+  const foundClass = (classes || []).find((c) => normalizeCode(c.class_code) === normClassCode);
+
+  if (!foundClass) {
+    console.warn('[AEM Diagnostik Access] Kode Kelas TIDAK DITEMUKAN pada Supabase:', {
+      searchedCode: normClassCode,
+      totalClassesInDb: classes?.length || 0,
+      availableClassCodes: (classes || []).map((c) => c.class_code),
+    });
     return {
       ok: false,
       error: `Kode Kelas "${normClassCode}" tidak ditemukan. Pastikan Ibu/Bapak Guru sudah membuat kelas di Dashboard Guru.`,
     };
   }
 
-  const foundClass = classes.find((c) => normalizeCode(c.class_code) === normClassCode);
-  if (!foundClass) {
-    return {
-      ok: false,
-      error: `Kode Kelas "${normClassCode}" tidak ditemukan. Coba periksa kembali huruf dan angkanya bersama gurumu ya!`,
-    };
-  }
+  console.log('[AEM Diagnostik Access] Kode Kelas BERHASIL DITEMUKAN pada Supabase:', {
+    classFound: true,
+    classId: foundClass.id,
+    className: foundClass.class_name,
+    classCode: foundClass.class_code,
+    teacherId: foundClass.teacher_id,
+  });
 
   const { data: groups, error: gErr } = await supabase
     .from('student_groups')
@@ -284,24 +379,42 @@ export async function findStudentGroupInSupabase(
     .eq('class_id', foundClass.id);
 
   if (gErr) {
-    console.error('Error fetching groups:', gErr);
+    console.error('[AEM Diagnostik Access] Query tabel student_groups gagal dari Supabase:', {
+      classId: foundClass.id,
+      message: gErr.message,
+      details: gErr.details,
+      hint: gErr.hint,
+      code: gErr.code,
+    });
     return { ok: false, error: 'Gagal mengambil data kelompok.' };
   }
 
-  if (!groups || groups.length === 0) {
-    return {
-      ok: false,
-      error: `Belum ada kelompok yang terdaftar pada kelas ${foundClass.class_name} (${foundClass.class_code}).`,
-    };
-  }
+  const foundGroup = (groups || []).find((g) => normalizeCode(g.group_code) === normGroupCode);
 
-  const foundGroup = groups.find((g) => normalizeCode(g.group_code) === normGroupCode);
   if (!foundGroup) {
+    console.warn('[AEM Diagnostik Access] Kode Kelompok TIDAK DITEMUKAN pada kelas:', {
+      searchedGroupCode: normGroupCode,
+      classId: foundClass.id,
+      totalGroupsInClass: groups?.length || 0,
+      availableGroupCodes: (groups || []).map((g) => g.group_code),
+    });
     return {
       ok: false,
       error: `Kode Kelompok "${normGroupCode}" belum terdaftar pada kelas ${foundClass.class_name} (${foundClass.class_code}).`,
     };
   }
+
+  const isGroupConnectedToCorrectClass = foundGroup.class_id === foundClass.id;
+
+  console.log('[AEM Diagnostik Access] Kode Kelompok BERHASIL DITEMUKAN pada Supabase:', {
+    groupFound: true,
+    groupId: foundGroup.id,
+    groupName: foundGroup.group_name,
+    groupCode: foundGroup.group_code,
+    classId: foundGroup.class_id,
+    isGroupConnectedToCorrectClass,
+    members: foundGroup.members,
+  });
 
   const classRoom: ClassRoom = {
     id: foundClass.id,

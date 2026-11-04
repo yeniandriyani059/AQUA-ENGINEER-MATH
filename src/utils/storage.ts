@@ -129,20 +129,15 @@ export const CLEAN_TRIAL_FLAG = 'aem.cleaned_pre_supabase_v2';
 
 /**
  * Mendeteksi apakah entri merupakan data percobaan lokal sebelum integrasi Supabase
- * (seperti 'Kelas 5', 'AQUA1', atau anggota 'yeni, eren, devaro').
+ * (khusus kode dummy 'AQUA1' atau daftar anggota dummy 'yeni, eren, devaro').
+ * PENTING: Jangan pernah menandai nama kelas valid seperti 'Kelas 5' (AQUA-5-26) sebagai data percobaan!
  */
 export function isTrialItem(val: unknown): boolean {
   if (!val || typeof val !== 'string') return false;
   const s = val.trim().toLowerCase();
-  const isExactKelas5 = s === 'kelas 5' || s === 'kelas5';
-  return (
-    s === 'aqua1' ||
-    s.includes('aqua1') ||
-    isExactKelas5 ||
-    s.includes('yeni') ||
-    s.includes('eren') ||
-    s.includes('devaro')
-  );
+  const isLegacyDummyMembers =
+    s.includes('yeni') && s.includes('eren') && s.includes('devaro');
+  return s === 'aqua1' || s === 'aqua-1' || isLegacyDummyMembers;
 }
 
 /**

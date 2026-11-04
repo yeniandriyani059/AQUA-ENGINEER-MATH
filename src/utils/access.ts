@@ -43,6 +43,7 @@ export function normalizeCode(raw: string): string {
   return (raw || '')
     .trim()
     .toUpperCase()
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
     .replace(/\s+/g, '');
 }
 
@@ -171,8 +172,7 @@ export function validateStudentAccess(
   if (!foundClass) {
     return {
       ok: false,
-      error:
-        'Kode Kelas tidak ditemukan. Coba periksa kembali huruf dan angkanya bersama Ibu/Bapak Guru ya (contoh: AQUA-5A-26).',
+      error: `Kode kelas tidak ditemukan: Kode Kelas "${normClassCode}" belum terdaftar. Periksa kembali penulisan huruf, tanda hubung (-), dan angkanya bersama Ibu/Bapak Guru (contoh: AQUA-5-26).`,
     };
   }
 
@@ -191,12 +191,12 @@ export function validateStudentAccess(
     if (existsInOtherClass) {
       return {
         ok: false,
-        error: `Kode Kelompok "${normGroupCode}" terdaftar di kelas lain, bukan di kelas ${foundClass.name} (${foundClass.code}). Periksa kembali Kode Kelas dan Kode Kelompokmu ya!`,
+        error: `Kelompok bukan bagian dari kelas tersebut: Kode Kelompok "${normGroupCode}" terdaftar di kelas lain, bukan bagian dari kelas ${foundClass.name} (${foundClass.code}).`,
       };
     }
     return {
       ok: false,
-      error: `Kode Kelompok "${normGroupCode}" belum terdaftar pada kelas ${foundClass.name} (${foundClass.code}). Mintalah Kode Kelompok yang benar kepada Ibu/Bapak Guru ya.`,
+      error: `Kode kelompok tidak ditemukan: Kode Kelompok "${normGroupCode}" belum terdaftar pada kelas ${foundClass.name} (${foundClass.code}).`,
     };
   }
 

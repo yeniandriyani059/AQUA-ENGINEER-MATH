@@ -289,9 +289,12 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
     setErr('');
     setBusy(true);
 
+    const trimmedClassCode = classCode.trim().toUpperCase();
+    const trimmedGroupCode = groupCode.trim().toUpperCase();
+
     try {
-      // 1. Primary: Lookup live in Supabase
-      const sbResult = await findStudentGroupInSupabase(classCode, groupCode);
+      // 1. Primary: Validasi langsung ke Supabase (dan mirror sinkronisasi lintas perangkat)
+      const sbResult = await findStudentGroupInSupabase(trimmedClassCode, trimmedGroupCode);
 
       let sess: SessionInfo | null = null;
       let errorMsg = '';
@@ -303,8 +306,12 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
           const hasGroup = d.groups.some((g) => g.id === group.id);
           return {
             ...d,
-            classes: hasClass ? d.classes : [...d.classes, classRoom],
-            groups: hasGroup ? d.groups : [...d.groups, group],
+            classes: hasClass
+              ? d.classes.map((c) => (c.id === classRoom.id ? classRoom : c))
+              : [...d.classes, classRoom],
+            groups: hasGroup
+              ? d.groups.map((g) => (g.id === group.id ? group : g))
+              : [...d.groups, group],
           };
         });
 
@@ -320,22 +327,27 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
         };
       } else {
         errorMsg = sbResult.error || '';
-        // 2. Fallback: Check local memory/cache
-        const localRes = validateStudentAccess(
-          data.classes,
-          data.groups,
-          classCode,
-          groupCode
-        );
-        if (localRes.ok && localRes.session) {
-          sess = localRes.session;
-        } else if (!errorMsg) {
-          errorMsg = localRes.error || 'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!';
+        // 2. Fallback hanya jika memori state memiliki kelas yang dibuat di sesi yang sama saat offline
+        if (data.classes.length > 0) {
+          const localRes = validateStudentAccess(
+            data.classes,
+            data.groups,
+            trimmedClassCode,
+            trimmedGroupCode
+          );
+          if (localRes.ok && localRes.session) {
+            sess = localRes.session;
+          } else if (!errorMsg) {
+            errorMsg = localRes.error || '';
+          }
         }
       }
 
       if (!sess) {
-        setErr(errorMsg || 'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama gurumu ya!');
+        setErr(
+          errorMsg ||
+            'Kode kelas tidak ditemukan: Periksa kembali Kode Kelas dan Kode Kelompok bersama Ibu/Bapak Guru.'
+        );
         return;
       }
 
@@ -344,7 +356,7 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
       const groupProjs = data.projects.filter((p) => sameGroup(p.group, sess));
       groupProjs.forEach((p) => unlock(p.id));
 
-      toast(`Selamat datang, ${sess.name} (Kelas ${sess.kelas})!`);
+      toast(`Selamat datang, ${sess.name} (${sess.kelas})!`);
       onClose();
 
       if (pending) {
@@ -360,7 +372,9 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
         go('dashboard');
       }
     } catch {
-      setErr('Gagal memverifikasi Kode Kelas & Kode Kelompok. Periksa jaringan Anda.');
+      setErr(
+        'Koneksi Supabase bermasalah: Gagal memverifikasi Kode Kelas & Kode Kelompok. Periksa jaringan internet Anda.'
+      );
     } finally {
       setBusy(false);
     }
@@ -404,7 +418,7 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
           <Field
             id="s-class-code"
             label="Kode Kelas"
-            hint="Contoh: AQUA-5A-26 (diberikan oleh Guru)"
+            hint="Contoh: AQUA-5-26 (diberikan oleh Guru)"
           >
             <input
               id="s-class-code"
@@ -412,7 +426,8 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
               value={classCode}
               onChange={(e) => setClassCode(e.target.value.toUpperCase())}
               autoComplete="off"
-              placeholder="AQUA-5A-26"
+              placeholder="AQUA-5-26"
+              disabled={busy}
               style={{ fontWeight: 800, letterSpacing: '0.04em' }}
             />
           </Field>
@@ -420,7 +435,7 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
           <Field
             id="s-group-code"
             label="Kode Kelompok"
-            hint="Contoh: LUMBA-01 (diberikan oleh Guru)"
+            hint="Contoh: GURITA-01 atau HIU-01 (diberikan oleh Guru)"
           >
             <input
               id="s-group-code"
@@ -428,7 +443,8 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
               value={groupCode}
               onChange={(e) => setGroupCode(e.target.value.toUpperCase())}
               autoComplete="off"
-              placeholder="LUMBA-01"
+              placeholder="GURITA-01"
+              disabled={busy}
               style={{ fontWeight: 800, letterSpacing: '0.04em' }}
             />
           </Field>
@@ -446,9 +462,9 @@ export function AccessModal({ onClose, pending }: AccessModalProps) {
               kind="orange"
               type="submit"
               icon="rocket"
-              disabled={!classCode.trim() || !groupCode.trim()}
+              disabled={busy || !classCode.trim() || !groupCode.trim()}
             >
-              Masuk ke Ruang Proyek
+              {busy ? 'Memeriksa Kode...' : 'Masuk ke Ruang Proyek'}
             </Btn>
             <Btn
               type="button"

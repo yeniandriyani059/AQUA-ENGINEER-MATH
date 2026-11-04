@@ -1,0 +1,58 @@
+{
+  "classes": [
+    {
+      "id": "cls-aqua-5-26",
+      "teacher_id": "teacher-supabase-sync",
+      "class_name": "Kelas 5",
+      "class_code": "AQUA-5-26",
+      "created_at": "2026-03-01T08:00:00.000Z"
+    },
+    {
+      "id": "cls-aqua-51-26",
+      "teacher_id": "teacher-supabase-sync",
+      "class_name": "Kelas 51",
+      "class_code": "AQUA-51-26",
+      "created_at": "2026-03-01T08:00:00.000Z"
+    }
+  ],
+  "student_groups": [
+    {
+      "id": "grp-aqua-5-26-gurita-01",
+      "class_id": "cls-aqua-5-26",
+      "group_name": "Kelompok Gurita",
+      "group_code": "GURITA-01",
+      "members": [
+        "Anggota Kelompok Gurita"
+      ],
+      "created_at": "2026-03-01T08:05:00.000Z",
+      "updated_at": "2026-03-01T08:05:00.000Z"
+    },
+    {
+      "id": "grp-aqua-5-26-hiu-01",
+      "class_id": "cls-aqua-5-26",
+      "group_name": "Kelompok Hiu",
+      "group_code": "HIU-01",
+      "members": [
+        "Aisyah",
+        "Bima",
+        "Rara"
+      ],
+      "created_at": "2026-03-01T08:10:00.000Z",
+      "updated_at": "2026-03-01T08:10:00.000Z"
+    },
+    {
+      "id": "grp-aqua-51-26-hiu-01",
+      "class_id": "cls-aqua-51-26",
+      "group_name": "Kelompok Hiu",
+      "group_code": "HIU-01",
+      "members": [
+        "Aisyah",
+        "Bima",
+        "Rara"
+      ],
+      "created_at": "2026-03-01T08:15:00.000Z",
+      "updated_at": "2026-03-01T08:15:00.000Z"
+    }
+  ],
+  "updatedAt": "2026-11-04T15:18:41.600Z"
+}

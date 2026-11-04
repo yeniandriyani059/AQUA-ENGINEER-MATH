@@ -6,6 +6,8 @@ import { Btn, Field, AquaTip } from '../common/UI';
 import { STAGES } from '../../data/stages';
 import { curStage, pct, sameGroup } from '../../utils/storage';
 import { validateStudentAccess } from '../../utils/access';
+import { findStudentGroupInSupabase } from '../../services/classGroupService';
+import { SessionInfo } from '../../types';
 import { Icon } from '../icons/Icon';
 
 export function Beranda() {
@@ -14,37 +16,98 @@ export function Beranda() {
   const [classCode, setClassCode] = useState('');
   const [groupCode, setGroupCode] = useState('');
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const handleStudentLogin = (e: React.FormEvent) => {
+  const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr('');
+    setBusy(true);
 
-    const res = validateStudentAccess(data.classes, data.groups, classCode, groupCode);
-    if (!res.ok || !res.session) {
+    const trimmedClassCode = classCode.trim().toUpperCase();
+    const trimmedGroupCode = groupCode.trim().toUpperCase();
+
+    try {
+      // 1. Validasi utama langsung ke Supabase (dan mirror sinkronisasi lintas perangkat)
+      const sbResult = await findStudentGroupInSupabase(trimmedClassCode, trimmedGroupCode);
+
+      let sess: SessionInfo | null = null;
+      let errorMsg = '';
+
+      if (sbResult.ok && sbResult.classRoom && sbResult.group) {
+        const { classRoom, group } = sbResult;
+        setData((d) => {
+          const hasClass = d.classes.some((c) => c.id === classRoom.id);
+          const hasGroup = d.groups.some((g) => g.id === group.id);
+          return {
+            ...d,
+            classes: hasClass
+              ? d.classes.map((c) => (c.id === classRoom.id ? classRoom : c))
+              : [...d.classes, classRoom],
+            groups: hasGroup
+              ? d.groups.map((g) => (g.id === group.id ? group : g))
+              : [...d.groups, group],
+          };
+        });
+
+        sess = {
+          groupId: group.id,
+          classId: classRoom.id,
+          classCode: classRoom.code,
+          groupCode: group.code,
+          kelas: classRoom.name,
+          name: group.name,
+          members: group.members,
+          codeHash: group.codeHash,
+        };
+      } else {
+        errorMsg = sbResult.error || '';
+        // 2. Fallback hanya jika memori state memiliki kelas yang dibuat di sesi yang sama saat offline
+        if (data.classes.length > 0) {
+          const localRes = validateStudentAccess(
+            data.classes,
+            data.groups,
+            trimmedClassCode,
+            trimmedGroupCode
+          );
+          if (localRes.ok && localRes.session) {
+            sess = localRes.session;
+          } else if (!errorMsg) {
+            errorMsg = localRes.error || '';
+          }
+        }
+      }
+
+      if (!sess) {
+        setErr(
+          errorMsg ||
+            'Kode kelas tidak ditemukan: Periksa kembali Kode Kelas dan Kode Kelompok bersama Ibu/Bapak Guru.'
+        );
+        return;
+      }
+
+      setSession(sess);
+
+      const groupProjs = data.projects.filter((p) => sameGroup(p.group, sess));
+      groupProjs.forEach((p) => unlock(p.id));
+
+      if (groupProjs.length > 0) {
+        const latest = groupProjs
+          .slice()
+          .sort((a, b) => (b.updated > a.updated ? 1 : -1))[0];
+        setData((d) => ({ ...d, currentId: latest.id }));
+      } else {
+        setData((d) => ({ ...d, currentId: null }));
+      }
+
+      toast(`Selamat datang di Aqua City, ${sess.name} (${sess.kelas})!`);
+      go('dashboard');
+    } catch {
       setErr(
-        res.error ||
-          'Kode Kelas atau Kode Kelompok belum tepat. Coba periksa kembali bersama Ibu/Bapak Guru ya!'
+        'Koneksi Supabase bermasalah: Gagal memverifikasi Kode Kelas & Kode Kelompok. Periksa jaringan internet Anda.'
       );
-      return;
+    } finally {
+      setBusy(false);
     }
-
-    const sess = res.session;
-    setSession(sess);
-
-    const groupProjs = data.projects.filter((p) => sameGroup(p.group, sess));
-    groupProjs.forEach((p) => unlock(p.id));
-
-    if (groupProjs.length > 0) {
-      const latest = groupProjs
-        .slice()
-        .sort((a, b) => (b.updated > a.updated ? 1 : -1))[0];
-      setData((d) => ({ ...d, currentId: latest.id }));
-    } else {
-      setData((d) => ({ ...d, currentId: null }));
-    }
-
-    toast(`Selamat datang di Aqua City, ${sess.name} (Kelas ${sess.kelas})!`);
-    go('dashboard');
   };
 
   if (view === 'siswa') {
@@ -75,7 +138,7 @@ export function Beranda() {
               <Field
                 id="home-class-code"
                 label="Kode Kelas"
-                hint="Contoh: AQUA-5A-26 (diberikan oleh Guru)"
+                hint="Contoh: AQUA-5-26 (diberikan oleh Guru)"
               >
                 <input
                   id="home-class-code"
@@ -83,7 +146,8 @@ export function Beranda() {
                   value={classCode}
                   onChange={(e) => setClassCode(e.target.value.toUpperCase())}
                   autoComplete="off"
-                  placeholder="AQUA-5A-26"
+                  placeholder="AQUA-5-26"
+                  disabled={busy}
                   style={{ fontWeight: 800, letterSpacing: '0.04em' }}
                 />
               </Field>
@@ -91,7 +155,7 @@ export function Beranda() {
               <Field
                 id="home-group-code"
                 label="Kode Kelompok"
-                hint="Contoh: LUMBA-01 (diberikan oleh Guru)"
+                hint="Contoh: GURITA-01 atau HIU-01 (diberikan oleh Guru)"
               >
                 <input
                   id="home-group-code"
@@ -99,7 +163,8 @@ export function Beranda() {
                   value={groupCode}
                   onChange={(e) => setGroupCode(e.target.value.toUpperCase())}
                   autoComplete="off"
-                  placeholder="LUMBA-01"
+                  placeholder="GURITA-01"
+                  disabled={busy}
                   style={{ fontWeight: 800, letterSpacing: '0.04em' }}
                 />
               </Field>
@@ -117,13 +182,14 @@ export function Beranda() {
                   kind="orange"
                   type="submit"
                   icon="rocket"
-                  disabled={!classCode.trim() || !groupCode.trim()}
+                  disabled={busy || !classCode.trim() || !groupCode.trim()}
                 >
-                  Masuk ke Ruang Proyek
+                  {busy ? 'Memeriksa Kode...' : 'Masuk ke Ruang Proyek'}
                 </Btn>
                 <Btn
                   type="button"
                   icon="left"
+                  disabled={busy}
                   onClick={() => {
                     setView('welcome');
                     setErr('');

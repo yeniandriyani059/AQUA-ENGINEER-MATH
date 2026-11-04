@@ -94,7 +94,7 @@ function MainApp() {
             <div className="chip">
               <Icon n="users" size={16} />
               {session
-                ? `${session.name} · Kelas ${session.kelas}${session.groupCode ? ` (${session.groupCode})` : ''}`
+                ? `${session.name} · ${/^kelas\b/i.test(session.kelas) ? session.kelas : `Kelas ${session.kelas}`}${session.groupCode ? ` (${session.groupCode})` : ''}`
                 : 'Belum masuk kelompok'}
             </div>
             {proj && (

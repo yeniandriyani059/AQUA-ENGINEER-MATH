@@ -6,7 +6,13 @@ import { caseById } from '../data/cases';
 import { supabase } from '../lib/supabase';
 import type { AuthChangeEvent, Session as SupabaseSession } from '@supabase/supabase-js';
 import { fetchCurrentTeacherSession, signOutTeacher } from '../services/authService';
-import { fetchTeacherClassesAndGroups, syncLocalClassesAndGroupsToSupabase } from '../services/classGroupService';
+import {
+  fetchTeacherClassesAndGroups,
+  syncLocalClassesAndGroupsToSupabase,
+  fetchStudentGroupProjects,
+  saveStudentGroupProject,
+} from '../services/classGroupService';
+import { isValidStudentSession } from '../utils/studentToken';
 
 interface AppContextValue {
   data: StoredData;
@@ -98,7 +104,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         isTrialItem(parsed?.kelas) ||
         isTrialItem(parsed?.members) ||
         isTrialItem(parsed?.classCode) ||
-        isTrialItem(parsed?.groupCode)
+        isTrialItem(parsed?.groupCode) ||
+        !isValidStudentSession(parsed)
       ) {
         localStorage.removeItem(SESSION_KEY);
         return null;
@@ -190,9 +197,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('hashchange', f);
   }, []);
 
-  // Listen to Supabase Auth state changes & sync teacher session
+  // Listen to Supabase Auth state changes & sync teacher session independently from student session
   useEffect(() => {
-    // Check initial active session from Supabase
     fetchCurrentTeacherSession().then((ts) => {
       setTeacherSession(ts);
     });
@@ -238,30 +244,96 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dataRef.current = data;
   }, [data]);
 
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  const teacherSessionRef = useRef(teacherSession);
+  useEffect(() => {
+    teacherSessionRef.current = teacherSession;
+  }, [teacherSession]);
+
+  // Saat siswa aktif memiliki studentToken, muat proyek khusus kelompoknya saja & isolasi dari kelompok lain
+  useEffect(() => {
+    if (!session) return;
+    if (!isValidStudentSession(session)) {
+      setSession(null);
+      return;
+    }
+
+    // Jika Guru sedang tidak login di browser ini, saring state proyek agar hanya berisi proyek milik kelompok siswa yang sedang aktif
+    if (!teacherSessionRef.current) {
+      setData((d) => ({
+        ...d,
+        classes: [],
+        groups: [],
+        projects: d.projects.filter((p) => sameGroup(p.group, session)),
+      }));
+    }
+
+    if (session.studentToken) {
+      fetchStudentGroupProjects(session.studentToken).then((serverProjects) => {
+        if (!serverProjects || serverProjects.length === 0) return;
+        setData((d) => {
+          const map = new Map<string, Project>();
+          const baseProjects = teacherSessionRef.current
+            ? d.projects
+            : d.projects.filter((p) => sameGroup(p.group, session));
+          for (const p of baseProjects) map.set(p.id, p);
+          for (const sp of serverProjects) {
+            if (sameGroup(sp.group, session)) {
+              const existing = map.get(sp.id);
+              if (!existing || sp.updated >= existing.updated) {
+                map.set(sp.id, sp);
+              }
+            }
+          }
+          return {
+            ...d,
+            projects: Array.from(map.values()),
+          };
+        });
+      });
+    }
+  }, [session, setSession]);
+
   const refreshTeacherData = useCallback(async () => {
     const currentTeacherId = teacherSession?.id;
     if (!currentTeacherId) return;
     try {
-      // 1. Sync any unsynced local classes & groups to Supabase first
       await syncLocalClassesAndGroupsToSupabase(
         currentTeacherId,
         dataRef.current.classes,
         dataRef.current.groups
       );
 
-      // 2. Fetch latest data from Supabase
-      const { classes, groups } = await fetchTeacherClassesAndGroups(currentTeacherId);
-      setData((d) => ({
-        ...d,
-        classes: classes.length > 0 ? classes : d.classes,
-        groups: groups.length > 0 ? groups : d.groups,
-      }));
+      const { classes, groups, projects: backendProjects } =
+        await fetchTeacherClassesAndGroups(currentTeacherId);
+      setData((d) => {
+        const projMap = new Map<string, Project>();
+        for (const p of d.projects) projMap.set(p.id, p);
+        for (const bp of backendProjects || []) {
+          if (bp?.id) {
+            const ex = projMap.get(bp.id);
+            if (!ex || bp.updated >= ex.updated) {
+              projMap.set(bp.id, bp);
+            }
+          }
+        }
+        return {
+          ...d,
+          classes: classes.length > 0 ? classes : d.classes,
+          groups: groups.length > 0 ? groups : d.groups,
+          projects: Array.from(projMap.values()),
+        };
+      });
     } catch (e) {
       console.warn('Gagal menyinkronkan data kelas & kelompok Supabase:', e);
     }
   }, [teacherSession?.id]);
 
-  // Sync classes & groups from Supabase whenever active teacherSession changes
+  // Sinkronisasi data khusus Guru saat teacherSession berubah (tanpa mengganggu session Siswa!)
   useEffect(() => {
     if (teacherSession?.id) {
       refreshTeacherData();
@@ -270,9 +342,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ...d,
         classes: [],
         groups: [],
+        projects: sessionRef.current
+          ? d.projects.filter((p) => sameGroup(p.group, sessionRef.current))
+          : [],
       }));
     }
-  }, [teacherSession?.id]);
+  }, [teacherSession?.id, refreshTeacherData]);
 
   const toast = useCallback((msg: string, err?: boolean) => {
     setToastM({ msg, err });
@@ -284,6 +359,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (fn: (d: Project) => void) => {
       const targetId = proj?.id;
       if (!targetId) return;
+      let updatedProject: Project | null = null;
       setData((d) => ({
         ...d,
         projects: d.projects.map((p) => {
@@ -291,9 +367,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const c: Project = JSON.parse(JSON.stringify(p));
           fn(c);
           c.updated = nowIso();
+          updatedProject = c;
           return c;
         }),
       }));
+      if (updatedProject && sessionRef.current?.studentToken) {
+        saveStudentGroupProject(sessionRef.current.studentToken, updatedProject);
+      }
     },
     [proj?.id]
   );
@@ -346,7 +426,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const logoutStudent = useCallback(() => {
     setSession(null);
-    setData((d) => ({ ...d, currentId: null }));
+    setData((d) => ({
+      ...d,
+      currentId: null,
+      projects: teacherSessionRef.current ? d.projects : [],
+    }));
     toast('Kamu telah keluar dari sesi kelompok.');
   }, [setSession, toast]);
 
@@ -357,6 +441,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // ignore
     }
     setTeacherSession(null);
+    // PENTING: Logout Guru TIDAK mengeluarkan Siswa yang sedang aktif mengerjakan misi!
+    setData((d) => ({
+      ...d,
+      classes: [],
+      groups: [],
+      projects: sessionRef.current
+        ? d.projects.filter((p) => sameGroup(p.group, sessionRef.current))
+        : [],
+    }));
     toast('Anda telah keluar dari akun Guru.');
   }, [setTeacherSession, toast]);
 
@@ -372,7 +465,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const startMission = (caseId: string, sess?: SessionInfo | null, forceNew?: boolean) => {
     const curSess = sess || session;
-    if (!curSess) {
+    if (!curSess || !isValidStudentSession(curSess)) {
       setPendingAccessMission(caseId);
       setAccessInitialRole('siswa');
       setAccessModalOpen(true);
@@ -395,7 +488,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       title: c.nama + (same.length ? ' (' + (same.length + 1) + ')' : ''),
       group: curSess,
     });
-    setData((d) => ({ ...d, projects: [...d.projects, np], currentId: np.id }));
+    setData((d) => ({
+      ...d,
+      projects: [
+        ...(teacherSessionRef.current
+          ? d.projects
+          : d.projects.filter((p) => sameGroup(p.group, curSess))),
+        np,
+      ],
+      currentId: np.id,
+    }));
+    if (curSess.studentToken) {
+      saveStudentGroupProject(curSess.studentToken, np);
+    }
     unlock(np.id);
     toast('Misi ' + c.nama + ' dimulai. Selamat berpetualang!');
     goRaw('petualangan', 1);

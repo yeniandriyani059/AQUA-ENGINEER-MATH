@@ -139,7 +139,8 @@ create table if not exists public.student_groups (
 );
 
 -- =====================================================================
--- ROW LEVEL SECURITY (RLS) POLICIES UNTUK GURU DAN AKSES LINTAS PERANGKAT SISWA
+-- ROW LEVEL SECURITY (RLS) POLICIES — PEMISAHAN KETAT AKSES GURU & SISWA
+-- Tanpa menonaktifkan RLS dan tanpa memberi akses SELECT * bebas ke seluruh tabel!
 -- =====================================================================
 alter table public.profiles enable row level security;
 alter table public.classes enable row level security;
@@ -153,43 +154,17 @@ create policy "Guru membaca dan mengubah profil sendiri"
   using (auth.uid() = id)
   with check (auth.uid() = id);
 
--- B. Kebijakan CLASSES:
--- 1) Izinkan pembacaan terbatas (SELECT) bagi pengguna publik/anonim (siswa lintas perangkat) & guru
+-- B. Kebijakan CLASSES (Hanya Guru pemilik kelas; TIDAK ada SELECT * bebas untuk anon)
 drop policy if exists "Publik dan siswa dapat membaca kode kelas" on public.classes;
-create policy "Publik dan siswa dapat membaca kode kelas"
-  on public.classes for select
-  to anon, authenticated
-  using (true);
-
--- 2) Batasi INSERT, UPDATE, DELETE hanya untuk Guru pemilik kelas
-drop policy if exists "Guru membuat kelas miliknya sendiri" on public.classes;
-create policy "Guru membuat kelas miliknya sendiri"
-  on public.classes for insert
-  to authenticated
-  with check (auth.uid() = teacher_id);
-
-drop policy if exists "Guru mengubah kelas miliknya sendiri" on public.classes;
-create policy "Guru mengubah kelas miliknya sendiri"
-  on public.classes for update
+drop policy if exists "Guru mengelola kelas miliknya sendiri" on public.classes;
+create policy "Guru mengelola kelas miliknya sendiri"
+  on public.classes for all
   to authenticated
   using (auth.uid() = teacher_id)
   with check (auth.uid() = teacher_id);
 
-drop policy if exists "Guru menghapus kelas miliknya sendiri" on public.classes;
-create policy "Guru menghapus kelas miliknya sendiri"
-  on public.classes for delete
-  to authenticated
-  using (auth.uid() = teacher_id);
-
--- C. Kebijakan STUDENT_GROUPS:
--- 1) Izinkan pembacaan terbatas (SELECT) bagi pengguna publik/anonim (siswa lintas perangkat) & guru
+-- C. Kebijakan STUDENT_GROUPS (Hanya Guru pemilik kelas; TIDAK ada SELECT * bebas untuk anon)
 drop policy if exists "Publik dan siswa dapat membaca kelompok" on public.student_groups;
-create policy "Publik dan siswa dapat membaca kelompok"
-  on public.student_groups for select
-  to anon, authenticated
-  using (true);
-
--- 2) Batasi INSERT, UPDATE, DELETE hanya untuk Guru pemilik kelas dari kelompok tersebut
 drop policy if exists "Guru mengelola kelompok pada kelas miliknya" on public.student_groups;
 create policy "Guru mengelola kelompok pada kelas miliknya"
   on public.student_groups for all
@@ -206,4 +181,42 @@ create policy "Guru mengelola kelompok pada kelas miliknya"
       where c.id = student_groups.class_id and c.teacher_id = auth.uid()
     )
   );
+
+-- D. FUNGSI RPC KEAMANAN TERBATAS (SECURITY DEFINER) UNTUK VALIDASI KODE SISWA
+-- Hanya mengembalikan 1 baris kelompok yang cocok (tanpa mengekspos kelas/kelompok lain atau data pribadi Guru)
+create or replace function public.verify_student_group_access(
+  p_class_code text,
+  p_group_code text
+)
+returns table (
+  class_id uuid,
+  class_name text,
+  class_code text,
+  group_id uuid,
+  group_name text,
+  group_code text,
+  members text[],
+  created_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    c.id as class_id,
+    c.class_name,
+    c.class_code,
+    g.id as group_id,
+    g.group_name,
+    g.group_code,
+    g.members,
+    g.created_at
+  from public.classes c
+  join public.student_groups g on g.class_id = c.id
+  where upper(trim(c.class_code)) = upper(trim(p_class_code))
+    and upper(trim(g.group_code)) = upper(trim(p_group_code))
+  limit 1;
+$$;
+
+grant execute on function public.verify_student_group_access(text, text) to anon, authenticated;
 `;

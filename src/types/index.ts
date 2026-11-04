@@ -77,6 +77,9 @@ export interface GroupInfo {
   name: string;
   members: string;
   codeHash: string;
+  studentToken?: string;
+  expiresAt?: number;
+  role?: 'student';
 }
 
 export interface ExploreData {

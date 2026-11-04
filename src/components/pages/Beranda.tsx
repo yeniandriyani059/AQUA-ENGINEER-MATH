@@ -27,7 +27,7 @@ export function Beranda() {
     const trimmedGroupCode = groupCode.trim().toUpperCase();
 
     try {
-      // 1. Validasi utama langsung ke Supabase (dan mirror sinkronisasi lintas perangkat)
+      // 1. Validasi sisi server / RPC (tanpa mengekspos seluruh data kelas dan kelompok ke browser siswa)
       const sbResult = await findStudentGroupInSupabase(trimmedClassCode, trimmedGroupCode);
 
       let sess: SessionInfo | null = null;
@@ -35,19 +35,6 @@ export function Beranda() {
 
       if (sbResult.ok && sbResult.classRoom && sbResult.group) {
         const { classRoom, group } = sbResult;
-        setData((d) => {
-          const hasClass = d.classes.some((c) => c.id === classRoom.id);
-          const hasGroup = d.groups.some((g) => g.id === group.id);
-          return {
-            ...d,
-            classes: hasClass
-              ? d.classes.map((c) => (c.id === classRoom.id ? classRoom : c))
-              : [...d.classes, classRoom],
-            groups: hasGroup
-              ? d.groups.map((g) => (g.id === group.id ? group : g))
-              : [...d.groups, group],
-          };
-        });
 
         sess = {
           groupId: group.id,
@@ -58,6 +45,9 @@ export function Beranda() {
           name: group.name,
           members: group.members,
           codeHash: group.codeHash,
+          studentToken: sbResult.studentToken,
+          expiresAt: sbResult.expiresAt,
+          role: 'student',
         };
       } else {
         errorMsg = sbResult.error || '';
@@ -70,7 +60,10 @@ export function Beranda() {
             trimmedGroupCode
           );
           if (localRes.ok && localRes.session) {
-            sess = localRes.session;
+            sess = {
+              ...localRes.session,
+              role: 'student',
+            };
           } else if (!errorMsg) {
             errorMsg = localRes.error || '';
           }
@@ -85,21 +78,30 @@ export function Beranda() {
         return;
       }
 
-      setSession(sess);
+      const activeSess = sess;
+      const serverProjects = Array.isArray(sbResult.projects) ? sbResult.projects : [];
+      const mergedGroupProjs = [
+        ...data.projects.filter((p) => sameGroup(p.group, activeSess)),
+        ...serverProjects.filter(
+          (sp) =>
+            sameGroup(sp.group, activeSess) &&
+            !data.projects.some((ep) => ep.id === sp.id)
+        ),
+      ];
 
-      const groupProjs = data.projects.filter((p) => sameGroup(p.group, sess));
-      groupProjs.forEach((p) => unlock(p.id));
+      setSession(activeSess);
+      mergedGroupProjs.forEach((p) => unlock(p.id));
 
-      if (groupProjs.length > 0) {
-        const latest = groupProjs
+      if (mergedGroupProjs.length > 0) {
+        const latest = mergedGroupProjs
           .slice()
           .sort((a, b) => (b.updated > a.updated ? 1 : -1))[0];
-        setData((d) => ({ ...d, currentId: latest.id }));
+        setData((d) => ({ ...d, projects: mergedGroupProjs, currentId: latest.id }));
       } else {
-        setData((d) => ({ ...d, currentId: null }));
+        setData((d) => ({ ...d, projects: [], currentId: null }));
       }
 
-      toast(`Selamat datang di Aqua City, ${sess.name} (${sess.kelas})!`);
+      toast(`Selamat datang di Aqua City, ${activeSess.name} (${activeSess.kelas})!`);
       go('dashboard');
     } catch {
       setErr(

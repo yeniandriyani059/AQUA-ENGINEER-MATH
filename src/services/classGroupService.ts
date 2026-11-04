@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabase';
-import { ClassRoom, StudentGroup } from '../types';
+import { ClassRoom, Project, StudentGroup } from '../types';
 import { generateClassCode, generateGroupCode, normalizeCode } from '../utils/access';
+import { STUDENT_TOKEN_TTL_MS } from '../utils/studentToken';
 
 /**
  * Konversi input anggota (string koma atau array) menjadi Array String ["Aisyah", "Bima", "Rara"]
@@ -42,7 +43,10 @@ export interface StudentGroupLookupResult {
   error?: string;
   classRoom?: ClassRoom;
   group?: StudentGroup;
-  source?: 'supabase' | 'supabase-mirror';
+  studentToken?: string;
+  expiresAt?: number;
+  projects?: Project[];
+  source?: 'server-verified' | 'supabase-rpc' | 'supabase';
 }
 
 /**
@@ -81,18 +85,22 @@ export function classifySupabaseError(err: {
 }
 
 /**
- * Sinkronisasi otomatis daftar kelas & kelompok dari sesi terautentikasi Guru ke mirror server lintas perangkat
+ * Sinkronisasi otomatis daftar kelas, kelompok, dan proyek dari sesi Guru ke backend
  */
-async function pushMirrorSync(classes: ClassRoom[], groups: StudentGroup[]): Promise<void> {
+async function pushMirrorSync(
+  classes: ClassRoom[],
+  groups: StudentGroup[],
+  projects?: Project[]
+): Promise<void> {
   try {
     if (typeof fetch === 'undefined') return;
     await fetch('/api/supabase-mirror/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ classes, groups }),
+      body: JSON.stringify({ classes, groups, projects }),
     });
   } catch {
-    // Abaikan jika dijalankan di lingkungan tanpa endpoint mirror lokal
+    // Abaikan jika dijalankan di lingkungan tanpa endpoint lokal
   }
 }
 
@@ -114,106 +122,172 @@ async function pushMirrorDelete(payload: {
   }
 }
 
-interface MirrorData {
-  classes: Array<{
-    id: string;
-    teacher_id: string;
-    class_name: string;
-    class_code: string;
-    created_at: string;
-  }>;
-  student_groups: Array<{
-    id: string;
-    class_id: string;
-    group_name: string;
-    group_code: string;
-    members: string[] | string;
-    created_at: string;
-    updated_at?: string;
-  }>;
+export async function fetchStudentGroupProjects(studentToken: string): Promise<Project[]> {
+  if (!studentToken || typeof fetch === 'undefined') return [];
+  try {
+    const res = await fetch('/api/student/projects', {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.projects) ? data.projects : [];
+  } catch {
+    return [];
+  }
 }
 
-async function fetchMirrorStore(): Promise<MirrorData | null> {
+export async function saveStudentGroupProject(
+  studentToken: string,
+  project: Project
+): Promise<boolean> {
+  if (!studentToken || typeof fetch === 'undefined') return false;
   try {
-    if (typeof fetch === 'undefined') return null;
-    const res = await fetch('/api/supabase-mirror', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
+    const res = await fetch('/api/student/projects', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${studentToken}`,
+      },
+      body: JSON.stringify({ project }),
     });
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (json && Array.isArray(json.classes) && Array.isArray(json.student_groups)) {
-      return json as MirrorData;
-    }
+    return res.ok;
   } catch {
-    // Abaikan jika endpoint tidak terjangkau
+    return false;
   }
-  return null;
 }
 
 export async function fetchTeacherClassesAndGroups(teacherId: string): Promise<{
   classes: ClassRoom[];
   groups: StudentGroup[];
+  projects: Project[];
 }> {
-  if (!teacherId) return { classes: [], groups: [] };
+  if (!teacherId) return { classes: [], groups: [], projects: [] };
 
-  const { data: cData, error: cErr } = await supabase
-    .from('classes')
-    .select('id, teacher_id, class_name, class_code, created_at')
-    .eq('teacher_id', teacherId)
-    .order('created_at', { ascending: true });
+  let sbClasses: ClassRoom[] = [];
+  let sbGroups: StudentGroup[] = [];
 
-  if (cErr) {
-    console.error('Error fetching classes:', cErr);
-    throw new Error('Gagal mengambil data kelas. Periksa koneksi internet Anda.');
+  try {
+    const { data: cData, error: cErr } = await supabase
+      .from('classes')
+      .select('id, teacher_id, class_name, class_code, created_at')
+      .eq('teacher_id', teacherId)
+      .order('created_at', { ascending: true });
+
+    if (!cErr && cData) {
+      sbClasses = cData.map((c) => ({
+        id: c.id,
+        teacherId: c.teacher_id,
+        name: c.class_name,
+        code: normalizeCode(c.class_code),
+        createdAt: c.created_at,
+      }));
+    }
+
+    const classIds = sbClasses.map((c) => c.id);
+    if (classIds.length > 0) {
+      const { data: gData, error: gErr } = await supabase
+        .from('student_groups')
+        .select('id, class_id, group_name, group_code, members, created_at')
+        .in('class_id', classIds)
+        .order('created_at', { ascending: true });
+
+      if (!gErr && gData) {
+        const classMap = new Map(sbClasses.map((c) => [c.id, c]));
+        sbGroups = gData.map((g) => {
+          const cls = classMap.get(g.class_id);
+          const cleanGroupCode = normalizeCode(g.group_code);
+          return {
+            id: g.id,
+            classId: g.class_id,
+            className: cls ? cls.name : '',
+            classCode: cls ? cls.code : '',
+            name: g.group_name,
+            code: cleanGroupCode,
+            codeHash: cleanGroupCode,
+            members: formatMembersOutput(g.members),
+            createdAt: g.created_at,
+            updatedAt: (g as any).updated_at || g.created_at,
+          };
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('Supabase teacher fetch warning:', e);
   }
 
-  const classes: ClassRoom[] = (cData || []).map((c) => ({
-    id: c.id,
-    teacherId: c.teacher_id,
-    name: c.class_name,
-    code: normalizeCode(c.class_code),
-    createdAt: c.created_at,
-  }));
-
-  const classIds = classes.map((c) => c.id);
-  if (classIds.length === 0) {
-    return { classes: [], groups: [] };
+  if (sbClasses.length > 0 || sbGroups.length > 0) {
+    await pushMirrorSync(sbClasses, sbGroups);
   }
 
-  const { data: gData, error: gErr } = await supabase
-    .from('student_groups')
-    .select('id, class_id, group_name, group_code, members, created_at')
-    .in('class_id', classIds)
-    .order('created_at', { ascending: true });
+  // Gabungkan dengan data kelas, kelompok, dan seluruh proyek siswa yang tersinkronisasi di server
+  try {
+    if (typeof fetch !== 'undefined') {
+      const res = await fetch('/api/teacher/dashboard', {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'x-teacher-id': teacherId,
+        },
+      });
+      if (res.ok) {
+        const backendData = await res.json();
+        const classMap = new Map<string, ClassRoom>();
+        for (const bc of backendData.classes || []) {
+          const code = normalizeCode(bc.class_code || bc.code);
+          classMap.set(code, {
+            id: bc.id,
+            teacherId: bc.teacher_id || teacherId,
+            name: bc.class_name || bc.name,
+            code,
+            createdAt: bc.created_at || bc.createdAt || new Date().toISOString(),
+          });
+        }
+        for (const sc of sbClasses) {
+          classMap.set(normalizeCode(sc.code), sc);
+        }
 
-  if (gErr) {
-    console.error('Error fetching student_groups:', gErr);
-    throw new Error('Gagal mengambil data kelompok. Periksa koneksi internet Anda.');
+        const mergedClasses = Array.from(classMap.values());
+        const classById = new Map(mergedClasses.map((c) => [c.id, c]));
+
+        const groupMap = new Map<string, StudentGroup>();
+        for (const bg of backendData.student_groups || []) {
+          const gCode = normalizeCode(bg.group_code || bg.code);
+          const cls = classById.get(bg.class_id || bg.classId);
+          const key = `${bg.class_id || bg.classId}::${gCode}`;
+          groupMap.set(key, {
+            id: bg.id,
+            classId: bg.class_id || bg.classId,
+            className: cls ? cls.name : bg.className || '',
+            classCode: cls ? cls.code : bg.classCode || '',
+            name: bg.group_name || bg.name,
+            code: gCode,
+            codeHash: gCode,
+            members: formatMembersOutput(bg.members),
+            createdAt: bg.created_at || bg.createdAt || new Date().toISOString(),
+            updatedAt: bg.updated_at || bg.updatedAt || bg.created_at || new Date().toISOString(),
+          });
+        }
+        for (const sg of sbGroups) {
+          const key = `${sg.classId}::${normalizeCode(sg.code)}`;
+          groupMap.set(key, sg);
+        }
+
+        return {
+          classes: mergedClasses,
+          groups: Array.from(groupMap.values()),
+          projects: Array.isArray(backendData.projects) ? backendData.projects : [],
+        };
+      }
+    }
+  } catch {
+    // Abaikan jika endpoint lokal tidak tersedia
   }
 
-  const classMap = new Map(classes.map((c) => [c.id, c]));
-
-  const groups: StudentGroup[] = (gData || []).map((g) => {
-    const cls = classMap.get(g.class_id);
-    const cleanGroupCode = normalizeCode(g.group_code);
-    return {
-      id: g.id,
-      classId: g.class_id,
-      className: cls ? cls.name : '',
-      classCode: cls ? cls.code : '',
-      name: g.group_name,
-      code: cleanGroupCode,
-      codeHash: cleanGroupCode,
-      members: formatMembersOutput(g.members),
-      createdAt: g.created_at,
-      updatedAt: (g as any).updated_at || g.created_at,
-    };
-  });
-
-  await pushMirrorSync(classes, groups);
-
-  return { classes, groups };
+  return { classes: sbClasses, groups: sbGroups, projects: [] };
 }
 
 export async function createClassInSupabase({
@@ -497,7 +571,7 @@ export async function syncLocalClassesAndGroupsToSupabase(
 }
 
 /**
- * Validasi dari struktur data tabel (baik langsung dari Supabase maupun dari Mirror Supabase)
+ * Validasi dari struktur data tabel (digunakan oleh unit test & evaluasi terisolasi)
  */
 export function evaluateClassAndGroupRows(
   normClassCode: string,
@@ -518,7 +592,7 @@ export function evaluateClassAndGroupRows(
     created_at: string;
     updated_at?: string;
   }>,
-  source: 'supabase' | 'supabase-mirror' = 'supabase'
+  source: 'server-verified' | 'supabase-rpc' | 'supabase' = 'server-verified'
 ): StudentGroupLookupResult {
   const foundClass = classRows.find((c) => normalizeCode(c.class_code) === normClassCode);
 
@@ -586,12 +660,12 @@ export function evaluateClassAndGroupRows(
 }
 
 /**
- * Validasi Utama Masuk Siswa menggunakan Kode Kelas & Kode Kelompok
- * 1. Normalisasi input: trim spasi + huruf besar (toUpperCase) tanpa merusak tanda hubung (-) atau angka.
- * 2. Query langsung ke tabel Supabase `classes` berdasarkan `class_code` dan ambil `classes.id`.
- * 3. Query langsung ke tabel Supabase `student_groups` berdasarkan `class_id = classes.id` dan `group_code`.
- * 4. Jika policy RLS Supabase untuk pengguna anonim (`anon`) memfilter baris hingga 0 baris pada perangkat siswa,
- *    sistem memeriksa mirror sinkronisasi Supabase lintas perangkat atau menampilkan pesan diagnostik RLS yang spesifik.
+ * Validasi Utama Masuk Siswa (Tanpa Memerlukan Login Guru & Tanpa Mengekspos Seluruh Data Kelas/Kelompok):
+ * 1. Mengirimkan `classCode` dan `groupCode` yang telah dinormalisasi ke endpoint backend `/api/student/verify-code`.
+ * 2. Server memvalidasi kode melalui RPC Supabase `verify_student_group_access` atau basis data backend,
+ *    kemudian menerbitkan `studentToken` bertanda tangan HMAC dengan masa berlaku terbatas (12 jam)
+ *    yang hanya memberi izin pada kelompok tersebut.
+ * 3. Browser siswa HANYA menerima informasi kelompok miliknya sendiri, bukan daftar kelas/kelompok lain.
  */
 export async function findStudentGroupInSupabase(
   classCodeInput: string,
@@ -615,139 +689,94 @@ export async function findStudentGroupInSupabase(
     };
   }
 
+  // 1. Validasi Sisi Server melalui Endpoint Backend (/api/student/verify-code)
   try {
-    // 1. Cari kelas di tabel `classes` berdasarkan `class_code`
-    const { data: matchedClasses, error: cErr } = await supabase
-      .from('classes')
-      .select('id, teacher_id, class_name, class_code, created_at')
-      .ilike('class_code', normClassCode);
+    if (typeof fetch !== 'undefined') {
+      const res = await fetch('/api/student/verify-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          classCode: normClassCode,
+          groupCode: normGroupCode,
+        }),
+      });
 
-    if (cErr) {
-      const classified = classifySupabaseError(cErr);
+      const payload = await res.json().catch(() => null);
+      if (payload && typeof payload.ok === 'boolean') {
+        if (payload.ok && payload.classRoom && payload.group) {
+          return {
+            ok: true,
+            classRoom: payload.classRoom,
+            group: payload.group,
+            studentToken: payload.studentToken,
+            expiresAt: payload.expiresAt || Date.now() + STUDENT_TOKEN_TTL_MS,
+            projects: Array.isArray(payload.projects) ? payload.projects : [],
+            source: payload.source || 'server-verified',
+          };
+        }
+        return {
+          ok: false,
+          errorCode: payload.errorCode || 'CLASS_NOT_FOUND',
+          error:
+            payload.error ||
+            `Kode kelas atau kode kelompok tidak ditemukan. Periksa kembali penulisan kode bersama Ibu/Bapak Guru.`,
+        };
+      }
+    }
+  } catch {
+    // Jika endpoint lokal tidak terjangkau, lanjutkan ke RPC SECURITY DEFINER Supabase
+  }
+
+  // 2. Fallback RPC SECURITY DEFINER Supabase (`verify_student_group_access`)
+  // Tidak pernah melakukan SELECT * bebas ke tabel classes atau student_groups dari browser siswa!
+  try {
+    const { data: rpcRows, error: rpcErr } = await supabase.rpc('verify_student_group_access', {
+      p_class_code: normClassCode,
+      p_group_code: normGroupCode,
+    });
+
+    if (rpcErr) {
+      const classified = classifySupabaseError(rpcErr);
       return { ok: false, ...classified };
     }
 
-    let foundClass = (matchedClasses || []).find(
-      (c) => normalizeCode(c.class_code) === normClassCode
-    );
-
-    let allVisibleClasses = matchedClasses || [];
-    if (!foundClass) {
-      const { data: allClasses, error: allCErr } = await supabase
-        .from('classes')
-        .select('id, teacher_id, class_name, class_code, created_at');
-
-      if (allCErr) {
-        const classified = classifySupabaseError(allCErr);
-        return { ok: false, ...classified };
-      }
-
-      allVisibleClasses = allClasses || [];
-      foundClass = allVisibleClasses.find(
-        (c) => normalizeCode(c.class_code) === normClassCode
-      );
-    }
-
-    // Jika kelas ditemukan langsung di Supabase
-    if (foundClass) {
-      // 2. Cari kelompok di tabel `student_groups` berdasarkan `class_id = classes.id` dan `group_code`
-      const { data: classGroups, error: gErr } = await supabase
-        .from('student_groups')
-        .select('id, class_id, group_name, group_code, members, created_at')
-        .eq('class_id', foundClass.id);
-
-      if (gErr) {
-        const classified = classifySupabaseError(gErr);
-        return { ok: false, ...classified };
-      }
-
-      const foundGroup = (classGroups || []).find(
-        (g) => normalizeCode(g.group_code) === normGroupCode
-      );
-
-      if (foundGroup) {
-        return evaluateClassAndGroupRows(
-          normClassCode,
-          normGroupCode,
-          [foundClass],
-          [foundGroup],
-          'supabase'
-        );
-      }
-
-      // Periksa apakah kode kelompok tersebut ada di kelas lain di Supabase
-      const { data: groupsWithSameCode, error: otherGErr } = await supabase
-        .from('student_groups')
-        .select('id, class_id, group_name, group_code, members, created_at')
-        .ilike('group_code', normGroupCode);
-
-      if (otherGErr) {
-        const classified = classifySupabaseError(otherGErr);
-        return { ok: false, ...classified };
-      }
-
-      const existsInOtherClass = (groupsWithSameCode || []).some(
-        (g) => g.class_id !== foundClass!.id && normalizeCode(g.group_code) === normGroupCode
-      );
-
-      if (existsInOtherClass) {
-        return {
-          ok: false,
-          errorCode: 'GROUP_WRONG_CLASS',
-          error: `Kelompok bukan bagian dari kelas tersebut: Kode Kelompok "${normGroupCode}" terdaftar pada kelas lain, bukan bagian dari kelas ${foundClass.class_name} (${normalizeCode(foundClass.class_code)}).`,
-        };
-      }
-
-      // Jika `classGroups` kosong karena RLS `student_groups` memblokir anon SELECT, cek mirror
-      if ((classGroups || []).length === 0) {
-        const mirror = await fetchMirrorStore();
-        if (mirror) {
-          const mirrorRes = evaluateClassAndGroupRows(
-            normClassCode,
-            normGroupCode,
-            mirror.classes,
-            mirror.student_groups,
-            'supabase-mirror'
-          );
-          if (mirrorRes.ok || mirrorRes.errorCode === 'GROUP_WRONG_CLASS') {
-            return mirrorRes;
-          }
-        }
-      }
-
+    if (Array.isArray(rpcRows) && rpcRows.length > 0) {
+      const row = rpcRows[0];
+      const cleanClassCode = normalizeCode(row.class_code);
+      const cleanGroupCode = normalizeCode(row.group_code);
       return {
-        ok: false,
-        errorCode: 'GROUP_NOT_FOUND',
-        error: `Kode kelompok tidak ditemukan: Kode Kelompok "${normGroupCode}" belum terdaftar pada kelas ${foundClass.class_name} (${normalizeCode(foundClass.class_code)}).`,
-      };
-    }
-
-    // Jika `allVisibleClasses` kosong (0 baris terbaca oleh role `anon` karena RLS pada tabel `classes`)
-    if (allVisibleClasses.length === 0) {
-      const mirror = await fetchMirrorStore();
-      if (mirror && mirror.classes.length > 0) {
-        const mirrorRes = evaluateClassAndGroupRows(
-          normClassCode,
-          normGroupCode,
-          mirror.classes,
-          mirror.student_groups,
-          'supabase-mirror'
-        );
-        return mirrorRes;
-      }
-
-      return {
-        ok: false,
-        errorCode: 'RLS_ACCESS_DENIED',
-        error:
-          'Akses data ditolak oleh RLS: Tabel classes / student_groups di Supabase belum mengizinkan akses baca (SELECT) untuk pengguna publik/anonim pada perangkat siswa.',
+        ok: true,
+        source: 'supabase-rpc',
+        expiresAt: Date.now() + STUDENT_TOKEN_TTL_MS,
+        classRoom: {
+          id: row.class_id,
+          teacherId: row.teacher_id || '',
+          name: row.class_name,
+          code: cleanClassCode,
+          createdAt: row.created_at || new Date().toISOString(),
+        },
+        group: {
+          id: row.group_id,
+          classId: row.class_id,
+          className: row.class_name,
+          classCode: cleanClassCode,
+          name: row.group_name,
+          code: cleanGroupCode,
+          codeHash: cleanGroupCode,
+          members: formatMembersOutput(row.members),
+          createdAt: row.created_at || new Date().toISOString(),
+          updatedAt: row.updated_at || new Date().toISOString(),
+        },
       };
     }
 
     return {
       ok: false,
       errorCode: 'CLASS_NOT_FOUND',
-      error: `Kode kelas tidak ditemukan: Kode Kelas "${normClassCode}" belum terdaftar di database. Periksa kembali penulisan huruf, tanda hubung (-), dan angkanya bersama Ibu/Bapak Guru (contoh: AQUA-5-26).`,
+      error: `Kode kelas tidak ditemukan: Kode Kelas "${normClassCode}" atau Kode Kelompok "${normGroupCode}" tidak terdaftar.`,
     };
   } catch (networkErr: any) {
     const classified = classifySupabaseError(networkErr);

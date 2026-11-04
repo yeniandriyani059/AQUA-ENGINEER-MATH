@@ -84,7 +84,7 @@ export function DashboardSiswa() {
             <div className="grow">
               <div className="row" style={{ gap: 8, marginBottom: 6 }}>
                 <span className="chip" style={{ background: '#E8FAFF' }}>
-                  <Icon n="users" size={15} /> Nama Kelas: <b>Kelas {session.kelas}</b>
+                  <Icon n="users" size={15} /> Nama Kelas: <b>{/^kelas\b/i.test(session.kelas) ? session.kelas : `Kelas ${session.kelas}`}</b>
                 </span>
                 {session.classCode && (
                   <span className="chip">
@@ -118,7 +118,7 @@ export function DashboardSiswa() {
         <div className="kpi" style={{ marginTop: 14 }} aria-label="Informasi kelompok siswa">
           <div>
             <span className="hint">Nama Kelas</span>
-            <b style={{ fontSize: '1.15rem' }}>Kelas {session.kelas}</b>
+            <b style={{ fontSize: '1.15rem' }}>{/^kelas\b/i.test(session.kelas) ? session.kelas : `Kelas ${session.kelas}`}</b>
           </div>
           <div>
             <span className="hint">Nama Kelompok</span>

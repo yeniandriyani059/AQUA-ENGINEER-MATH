@@ -611,10 +611,23 @@ export function DashboardGuru() {
     };
   }, [groups, projects]);
 
-  // If teacher is not logged in, require teacher authentication first
+  // If teacher is not logged in, require teacher authentication first and block student access
   if (!teacherSession) {
     return (
       <div className="main">
+        {session && (
+          <div className="card" style={{ borderColor: '#F38B7A', background: '#FFF5F3' }}>
+            <AquaTip mood="sad" tone="bad">
+              <b>Akses Dibatasi — Halaman Khusus Guru:</b> Kamu sedang masuk sebagai siswa pada <b>{session.name}</b> ({session.groupCode || '-'}). Token akses siswa tidak dapat digunakan untuk membuka Dashboard Guru, mengubah kelas, atau melihat data kelompok lain.
+            </AquaTip>
+            <div className="row" style={{ marginTop: 12 }}>
+              <Btn kind="orange" icon="left" onClick={() => go('dashboard')}>
+                Kembali ke Ruang Proyek Kelompok ({session.name})
+              </Btn>
+            </div>
+          </div>
+        )}
+
         <div className="card" style={{ background: 'linear-gradient(135deg,var(--sky),#fff)' }}>
           <div className="row" style={{ gap: 16 }}>
             <Aqua size={76} mood="happy" />

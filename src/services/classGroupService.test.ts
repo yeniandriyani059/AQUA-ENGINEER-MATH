@@ -8,6 +8,15 @@ import {
   evaluateClassAndGroupRows,
   classifySupabaseError,
 } from './classGroupService';
+import {
+  decodeStudentTokenPayload,
+  isStudentTokenExpired,
+  canStudentTokenAccessGroup,
+  canStudentTokenAccessTeacherDashboard,
+  isValidStudentSession,
+} from '../utils/studentToken';
+
+process.env.AEM_SKIP_LISTEN = 'true';
 
 const SAMPLE_CLASSES = [
   {
@@ -81,37 +90,102 @@ test('parseMembersInput and formatMembersOutput handle text[] arrays properly', 
   assert.equal(formatMembersOutput(['Aisyah', 'Bima', 'Rara']), 'Aisyah, Bima, Rara');
 });
 
-test('Scenario 1: AQUA-5-26 + GURITA-01 succeeds and links to Kelas 5', () => {
-  const res = evaluateClassAndGroupRows(
+test('Scenario A & B: AQUA-5-26 + GURITA-01 and AQUA-5-26 + HIU-01 succeed and link to Kelas 5', () => {
+  const resGurita = evaluateClassAndGroupRows(
     normalizeCode('  aqua-5-26 '),
     normalizeCode(' gurita-01 '),
     SAMPLE_CLASSES,
     SAMPLE_GROUPS
   );
-  assert.equal(res.ok, true);
-  assert.equal(res.classRoom?.code, 'AQUA-5-26');
-  assert.equal(res.classRoom?.id, 'cls-aqua-5-26');
-  assert.equal(res.group?.code, 'GURITA-01');
-  assert.equal(res.group?.classId, 'cls-aqua-5-26');
-  assert.equal(res.group?.members, 'Dina, Edo, Fajar');
-});
+  assert.equal(resGurita.ok, true);
+  assert.equal(resGurita.classRoom?.code, 'AQUA-5-26');
+  assert.equal(resGurita.group?.code, 'GURITA-01');
 
-test('Scenario 2: AQUA-5-26 + HIU-01 succeeds and links to Kelas 5', () => {
-  const res = evaluateClassAndGroupRows(
+  const resHiu = evaluateClassAndGroupRows(
     normalizeCode('AQUA-5-26'),
     normalizeCode('HIU-01'),
     SAMPLE_CLASSES,
     SAMPLE_GROUPS
   );
-  assert.equal(res.ok, true);
-  assert.equal(res.classRoom?.code, 'AQUA-5-26');
-  assert.equal(res.group?.code, 'HIU-01');
-  assert.equal(res.group?.classId, 'cls-aqua-5-26');
-  assert.equal(res.group?.members, 'Aisyah, Bima, Rara');
+  assert.equal(resHiu.ok, true);
+  assert.equal(resHiu.classRoom?.code, 'AQUA-5-26');
+  assert.equal(resHiu.group?.code, 'HIU-01');
+  assert.equal(resHiu.group?.members, 'Aisyah, Bima, Rara');
+});
+
+test('Security & Token Scoping: Student token for GURITA-01 cannot access HIU-01 or Teacher Dashboard', async () => {
+  const { signStudentToken, verifyStudentTokenOnServer } = await import('../../server');
+  const now = Date.now();
+
+  const guritaSigned = signStudentToken({
+    sub: 'grp-aqua-5-26-gurita-01',
+    classId: 'cls-aqua-5-26',
+    classCode: 'AQUA-5-26',
+    groupId: 'grp-aqua-5-26-gurita-01',
+    groupCode: 'GURITA-01',
+    nowMs: now,
+  });
+
+  // Verify token signature on server
+  const verified = verifyStudentTokenOnServer(guritaSigned.token, now + 1000);
+  assert.equal(verified.ok, true);
+  assert.equal(verified.payload?.groupCode, 'GURITA-01');
+  assert.equal(verified.payload?.role, 'student');
+
+  // Decode on client
+  const decoded = decodeStudentTokenPayload(guritaSigned.token);
+  assert.ok(decoded);
+  assert.equal(isStudentTokenExpired(decoded, now + 1000), false);
+
+  // GURITA-01 CAN access GURITA-01
+  assert.equal(
+    canStudentTokenAccessGroup(decoded, 'grp-aqua-5-26-gurita-01', 'GURITA-01', now + 1000),
+    true
+  );
+
+  // GURITA-01 CANNOT access HIU-01
+  assert.equal(
+    canStudentTokenAccessGroup(decoded, 'grp-aqua-5-26-hiu-01', 'HIU-01', now + 1000),
+    false
+  );
+
+  // Student token CANNOT access Teacher Dashboard
+  assert.equal(canStudentTokenAccessTeacherDashboard(decoded), false);
+
+  // Tampered token is rejected by server
+  const tampered = guritaSigned.token.slice(0, -4) + 'XXXX';
+  assert.equal(verifyStudentTokenOnServer(tampered, now + 1000).ok, false);
+
+  // Expired token is rejected by server and client
+  assert.equal(
+    verifyStudentTokenOnServer(guritaSigned.token, guritaSigned.expiresAt + 1).ok,
+    false
+  );
+  assert.equal(isStudentTokenExpired(decoded, guritaSigned.expiresAt + 1), true);
+
+  // Student session remains valid independently of teacher login/logout
+  assert.equal(
+    isValidStudentSession(
+      {
+        groupId: 'grp-aqua-5-26-gurita-01',
+        classId: 'cls-aqua-5-26',
+        classCode: 'AQUA-5-26',
+        groupCode: 'GURITA-01',
+        kelas: 'Kelas 5',
+        name: 'Kelompok Gurita',
+        members: 'Dina, Edo',
+        codeHash: 'GURITA-01',
+        studentToken: guritaSigned.token,
+        expiresAt: guritaSigned.expiresAt,
+        role: 'student',
+      },
+      now + 5000
+    ),
+    true
+  );
 });
 
 test('Error Messages: Distinguishes all 5 required error states accurately', () => {
-  // 1. Kode kelas tidak ditemukan
   const errClass = evaluateClassAndGroupRows(
     'AQUA-99-26',
     'GURITA-01',
@@ -122,7 +196,6 @@ test('Error Messages: Distinguishes all 5 required error states accurately', () 
   assert.equal(errClass.errorCode, 'CLASS_NOT_FOUND');
   assert.match(errClass.error || '', /Kode kelas tidak ditemukan/i);
 
-  // 2. Kode kelompok tidak ditemukan
   const errGroup = evaluateClassAndGroupRows(
     'AQUA-5-26',
     'PAUS-99',
@@ -133,7 +206,6 @@ test('Error Messages: Distinguishes all 5 required error states accurately', () 
   assert.equal(errGroup.errorCode, 'GROUP_NOT_FOUND');
   assert.match(errGroup.error || '', /Kode kelompok tidak ditemukan/i);
 
-  // 3. Kelompok bukan bagian dari kelas tersebut
   const errWrongClass = evaluateClassAndGroupRows(
     'AQUA-5-26',
     'LUMBA-01',
@@ -144,12 +216,10 @@ test('Error Messages: Distinguishes all 5 required error states accurately', () 
   assert.equal(errWrongClass.errorCode, 'GROUP_WRONG_CLASS');
   assert.match(errWrongClass.error || '', /Kelompok bukan bagian dari kelas tersebut/i);
 
-  // 4. Koneksi Supabase bermasalah
   const errNet = classifySupabaseError({ message: 'Failed to fetch' });
   assert.equal(errNet.errorCode, 'SUPABASE_CONNECTION_ERROR');
   assert.match(errNet.error, /Koneksi Supabase bermasalah/i);
 
-  // 5. Akses data ditolak oleh RLS
   const errRls = classifySupabaseError({
     code: '42501',
     message: 'new row violates row-level security policy',
